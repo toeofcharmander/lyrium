@@ -3,7 +3,6 @@
 #include <climits>
 #include <cstddef>
 #include <cstdint>
-#include <limits>
 #include <mutex>
 #include <string>
 #include <utility>
@@ -11,19 +10,13 @@
 #include <windows.h>
 
 #include <d3d9.h>
-#include <processthreadsapi.h>
 #include <psapi.h>
 
-#include <backends/imgui_impl_dx9.h>
-#include <backends/imgui_impl_win32.h>
-#include <imgui.h>
-#include <winnt.h>
 
-#include "eluvian/allocators/imgui_allocator.h"
 #include "eluvian/config.h"
+#include "eluvian/overlay.h"
+#include "eluvian/stats.h"
 #include "eluvian/containers/unordered_map.h"
-#include "eluvian/containers/unordered_set.h"
-#include "eluvian/containers/vector.h"
 #include "eluvian/dao/engine_hooks.h"
 #include "eluvian/dao/pool_patch.h"
 #include "eluvian/diag/alloc_watch.h"
@@ -39,7 +32,6 @@
 #include "eluvian/texture_stager.h"
 #include "eluvian/utils.h"
 
-LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
 using eluvian::Event;
 
@@ -59,20 +51,10 @@ template <class F>
 using OrigFuncType = OrigFunc<F>::type;
 
 auto com_hook = eluvian::COMHook{};
-auto orig_wind_proc = ::WNDPROC{};
 
-std::atomic<bool> overlay_visible{false};
 auto config = eluvian::Config{};
 
-auto tracked_vertex_buffers = eluvian::ResourceTracker<void *>{};
-auto tracked_index_buffers = eluvian::ResourceTracker<void *>{};
-auto tracked_textures = eluvian::ResourceTracker<void *>{};
-auto tracked_state_blocks = eluvian::ResourceTracker<void *>{};
 
-std::atomic<std::uint64_t> texture_bytes_by_pool[4]{};
-std::atomic<std::uint64_t> texture_bytes_live{};
-std::atomic<std::uint64_t> d3d_create_failures{};
-std::atomic<std::uint64_t> d3d_creates{};
 
 std::mutex texture_size_mutex;
 eluvian::UnorderedMap<void *, std::pair<std::uint64_t, std::uint32_t>> texture_sizes;
@@ -95,8 +77,8 @@ auto remember_texture(void *texture, std::uint64_t bytes, ::D3DPOOL pool) -> voi
         texture_sizes[texture] = {bytes, static_cast<std::uint32_t>(pool)};
     }
 
-    texture_bytes_by_pool[pool_index(pool)].fetch_add(bytes, std::memory_order_relaxed);
-    texture_bytes_live.fetch_add(bytes, std::memory_order_relaxed);
+    eluvian::stats::texture_bytes_by_pool[pool_index(pool)].fetch_add(bytes, std::memory_order_relaxed);
+    eluvian::stats::texture_bytes_live.fetch_add(bytes, std::memory_order_relaxed);
     eluvian::diag::note_texture_created(static_cast<std::uint32_t>(pool), bytes);
 }
 
@@ -117,19 +99,19 @@ auto forget_texture(void *texture) -> void
         texture_sizes.erase(found);
     }
 
-    texture_bytes_by_pool[pool_index(static_cast<::D3DPOOL>(pool))].fetch_sub(bytes, std::memory_order_relaxed);
-    texture_bytes_live.fetch_sub(bytes, std::memory_order_relaxed);
+    eluvian::stats::texture_bytes_by_pool[pool_index(static_cast<::D3DPOOL>(pool))].fetch_sub(bytes, std::memory_order_relaxed);
+    eluvian::stats::texture_bytes_live.fetch_sub(bytes, std::memory_order_relaxed);
     eluvian::diag::note_texture_released(pool, bytes);
 }
 
 auto note_create(::HRESULT hr, std::uint64_t bytes) -> void
 {
-    d3d_creates.fetch_add(1u, std::memory_order_relaxed);
+    eluvian::stats::d3d_creates.fetch_add(1u, std::memory_order_relaxed);
     eluvian::dao::note_d3d_create_result(static_cast<std::int32_t>(hr), bytes);
 
     if (FAILED(hr))
     {
-        d3d_create_failures.fetch_add(1u, std::memory_order_relaxed);
+        eluvian::stats::d3d_create_failures.fetch_add(1u, std::memory_order_relaxed);
         eluvian::diag::Sampler::instance().sample_now("create_failed");
     }
 }
@@ -155,13 +137,7 @@ auto main_pool_override_bytes() -> std::uint32_t
 
 eluvian::dao::PoolPatchResult pool_patch_result{};
 
-std::atomic<std::uint64_t> pool_overrides{};
-std::atomic<std::uint64_t> pool_override_bytes{};
-std::atomic<std::uint64_t> pool_reverts{};
 
-std::atomic<std::uint64_t> rescue_attempts{};
-std::atomic<std::uint64_t> rescue_successes{};
-std::atomic<std::uint64_t> rescue_preemptive{};
 
 thread_local auto in_rescue = false;
 
@@ -175,42 +151,6 @@ auto reclaim(void *device) -> int
     }
 
     return released;
-}
-
-::LRESULT WINAPI wind_proc(const ::HWND hWnd, ::UINT uMsg, ::WPARAM wParam, ::LPARAM lParam)
-{
-
-    if (overlay_visible.load(std::memory_order_relaxed) &&
-        ::ImGui_ImplWin32_WndProcHandler(hWnd, uMsg, wParam, lParam))
-    {
-        return true;
-    }
-    return ::CallWindowProc(orig_wind_proc, hWnd, uMsg, wParam, lParam);
-}
-
-auto megabytes(std::uint64_t bytes) -> float
-{
-    return static_cast<float>(bytes) / (1024.0f * 1024.0f);
-}
-
-}
-
-namespace eluvian::diag
-{
-
-auto texture_pool_overrides() -> std::uint64_t
-{
-    return pool_overrides.load(std::memory_order_relaxed);
-}
-
-auto texture_pool_override_bytes() -> std::uint64_t
-{
-    return pool_override_bytes.load(std::memory_order_relaxed);
-}
-
-auto texture_pool_reverts() -> std::uint64_t
-{
-    return pool_reverts.load(std::memory_order_relaxed);
 }
 
 }
@@ -324,146 +264,8 @@ __declspec(dllexport) ::HRESULT WINAPI IDirect3DDevice9_EndScene_Hook(::PROC ori
 {
     using orig_call_type = OrigFuncType<decltype(&IDirect3DDevice9_EndScene_Hook)>;
 
-    {
-        static auto previously_held = false;
-        const auto held = (::GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0 &&
-                          (::GetAsyncKeyState(VK_F12) & 0x8000) != 0;
-        if (held && !previously_held)
-        {
-            const auto now_visible = !overlay_visible.load(std::memory_order_relaxed);
-            overlay_visible.store(now_visible, std::memory_order_relaxed);
-        }
-        previously_held = held;
-    }
-
-    if (!overlay_visible.load(std::memory_order_relaxed))
-    {
-        return reinterpret_cast<orig_call_type>(orig_func)(that);
-    }
-
-    [[maybe_unused]] static auto initialised = [that]()
-    {
-        auto *device = reinterpret_cast<::LPDIRECT3DDEVICE9>(that);
-
-        ::ImGui::SetAllocatorFunctions(eluvian::imgui_allocator, eluvian::imgui_deallocator, nullptr);
-
-        auto params = ::D3DDEVICE_CREATION_PARAMETERS{};
-        device->GetCreationParameters(&params);
-        const auto window = params.hFocusWindow;
-
-        orig_wind_proc = reinterpret_cast<::WNDPROC>(
-            ::SetWindowLongPtr(window, GWLP_WNDPROC, reinterpret_cast<::LONG_PTR>(wind_proc)));
-
-        IMGUI_CHECKVERSION();
-        ::ImGui::CreateContext();
-
-        auto &io = ::ImGui::GetIO();
-        io.ConfigFlags |= ::ImGuiConfigFlags_DockingEnable;
-
-        ::ImGui_ImplWin32_Init(window);
-        ::ImGui_ImplDX9_Init(device);
-
-        return true;
-    }();
-
-    ::ImGui_ImplDX9_NewFrame();
-    ::ImGui_ImplWin32_NewFrame();
-    ::ImGui::NewFrame();
-
-    ::ImGui::DockSpaceOverViewport(0, ::ImGui::GetMainViewport(), ::ImGuiDockNodeFlags_PassthruCentralNode);
-
-    ::ImGui::Begin("Address space");
-
-    const auto largest_free = eluvian::diag::Sampler::instance().largest_free();
-    const auto total_free = eluvian::diag::Sampler::instance().total_free();
-
-    static auto largest_free_samples = eluvian::Vector<float>(600u);
-    static auto last_plotted = std::uint64_t{};
-    if (largest_free != last_plotted)
-    {
-        last_plotted = largest_free;
-        largest_free_samples.erase(std::ranges::begin(largest_free_samples));
-        largest_free_samples.push_back(megabytes(largest_free));
-    }
-
-    ::ImGui::Text("largest contiguous free block: %.1f MB", megabytes(largest_free));
-    ::ImGui::Text("total free: %.1f MB", megabytes(total_free));
-    ::ImGui::PlotLines(
-        "largest block (MB)",
-        largest_free_samples.data(),
-        largest_free_samples.size(),
-        0,
-        nullptr,
-        0.0f,
-        std::numeric_limits<float>::max(),
-        ::ImVec2(0, 80.0f));
-
-    ::ImGui::Separator();
-    ::ImGui::Text(
-        "texture memory: %.1f MB live (managed %.1f MB, default %.1f MB)",
-        megabytes(texture_bytes_live.load(std::memory_order_relaxed)),
-        megabytes(texture_bytes_by_pool[D3DPOOL_MANAGED].load(std::memory_order_relaxed)),
-        megabytes(texture_bytes_by_pool[D3DPOOL_DEFAULT].load(std::memory_order_relaxed)));
-    ::ImGui::Text(
-        "d3d creates: %llu (%llu failed)",
-        static_cast<unsigned long long>(d3d_creates.load(std::memory_order_relaxed)),
-        static_cast<unsigned long long>(d3d_create_failures.load(std::memory_order_relaxed)));
-
-    const auto attempts = rescue_attempts.load(std::memory_order_relaxed);
-    if (attempts > 0u || rescue_preemptive.load(std::memory_order_relaxed) > 0u)
-    {
-        const auto recovered = rescue_successes.load(std::memory_order_relaxed);
-        ::ImGui::TextColored(
-            recovered == attempts ? ::ImVec4{0.4f, 1.0f, 0.4f, 1.0f} : ::ImVec4{1.0f, 0.8f, 0.3f, 1.0f},
-            "rescues: %llu/%llu recovered, %llu preemptive",
-            static_cast<unsigned long long>(recovered),
-            static_cast<unsigned long long>(attempts),
-            static_cast<unsigned long long>(rescue_preemptive.load(std::memory_order_relaxed)));
-    }
-    ::ImGui::Text("live textures: %zu", tracked_textures.live_count());
-    ::ImGui::Text(
-        "live vb/ib/state blocks: %zu / %zu / %zu",
-        tracked_vertex_buffers.live_count(),
-        tracked_index_buffers.live_count(),
-        tracked_state_blocks.live_count());
-
-    ::ImGui::Separator();
-    const auto engine = eluvian::dao::engine_state();
-    ::ImGui::Text("texture loads: %llu", static_cast<unsigned long long>(engine.texture_loads));
-    ::ImGui::Text(
-        "engine creates: %llu (%llu returned null)",
-        static_cast<unsigned long long>(engine.engine_texture_creates),
-        static_cast<unsigned long long>(engine.engine_texture_failures));
-    if (engine.suspect_textures > 0u)
-    {
-        ::ImGui::TextColored(
-            ::ImVec4{1.0f, 0.3f, 0.3f, 1.0f},
-            "SUSPECT textures (built on a failed d3d call): %llu",
-            static_cast<unsigned long long>(engine.suspect_textures));
-    }
-    if (engine.cache_readable)
-    {
-        ::ImGui::Text("cache texture memory: %d", engine.texture_memory);
-        ::ImGui::Text("cache pending releases: %d", engine.pending_releases);
-    }
-    ::ImGui::Text(
-        "evictions: %llu releasing %llu textures",
-        static_cast<unsigned long long>(engine.evictions),
-        static_cast<unsigned long long>(engine.evicted_textures));
-    if (engine.large_allocations > 0u)
-    {
-        ::ImGui::Text(
-            "large allocations: %llu (%.1f MB live in %llu blocks)",
-            static_cast<unsigned long long>(engine.large_allocations),
-            megabytes(engine.large_allocation_bytes_live),
-            static_cast<unsigned long long>(engine.large_allocations_live));
-    }
-
-    ::ImGui::End();
-
-    ::ImGui::EndFrame();
-    ::ImGui::Render();
-    ::ImGui_ImplDX9_RenderDrawData(ImGui::GetDrawData());
+    eluvian::overlay::poll_hotkey();
+    eluvian::overlay::render(reinterpret_cast<::IDirect3DDevice9 *>(that));
 
     return reinterpret_cast<orig_call_type>(orig_func)(that);
 }
@@ -489,7 +291,7 @@ __declspec(dllexport) ::ULONG WINAPI IDirect3DVertexBuffer9_Release_hook(::PROC 
 
     if (res == 0)
     {
-        tracked_vertex_buffers.untrack(that);
+        eluvian::stats::live_vertex_buffers.untrack(that);
     }
 
     return res;
@@ -515,7 +317,7 @@ __declspec(dllexport) ::HRESULT WINAPI IDirect3DDevice9_CreateVertexBuffer_hook(
     if (buffer != nullptr)
     {
         com_hook.add_hook<2zu>(buffer, IDirect3DVertexBuffer9_Release_hook);
-        tracked_vertex_buffers.track(buffer);
+        eluvian::stats::live_vertex_buffers.track(buffer);
     }
     else if (FAILED(res))
     {
@@ -533,7 +335,7 @@ __declspec(dllexport) ::ULONG WINAPI IDirect3DIndexBuffer9_Release_hook(::PROC o
 
     if (res == 0)
     {
-        tracked_index_buffers.untrack(that);
+        eluvian::stats::live_index_buffers.untrack(that);
     }
 
     return res;
@@ -559,7 +361,7 @@ __declspec(dllexport) ::HRESULT WINAPI IDirect3DDevice9_CreateIndexBuffer_hook(
     if (buffer != nullptr)
     {
         com_hook.add_hook<2zu>(buffer, IDirect3DIndexBuffer9_Release_hook);
-        tracked_index_buffers.track(buffer);
+        eluvian::stats::live_index_buffers.track(buffer);
     }
     else if (FAILED(res))
     {
@@ -624,7 +426,7 @@ __declspec(dllexport) ::ULONG WINAPI IDirect3DTexture9_Release_hook(::PROC orig_
         if (references == 1u && eluvian::TextureRecycler::instance().retain(texture))
         {
 
-            tracked_textures.untrack(that);
+            eluvian::stats::live_textures.untrack(that);
             return 0u;
         }
     }
@@ -635,7 +437,7 @@ __declspec(dllexport) ::ULONG WINAPI IDirect3DTexture9_Release_hook(::PROC orig_
     {
         eluvian::TextureRecycler::instance().forget(texture);
         eluvian::TextureStager::instance().forget(texture);
-        if (tracked_textures.untrack(that))
+        if (eluvian::stats::live_textures.untrack(that))
         {
             forget_texture(that);
         }
@@ -668,7 +470,7 @@ __declspec(dllexport) ::HRESULT WINAPI IDirect3DDevice9_CreateTexture_hook(
         if (largest != 0u && largest < config.rescue.low_watermark_bytes)
         {
             in_rescue = true;
-            rescue_preemptive.fetch_add(1u, std::memory_order_relaxed);
+            eluvian::stats::rescue_preemptive.fetch_add(1u, std::memory_order_relaxed);
             reclaim(that);
             in_rescue = false;
         }
@@ -697,7 +499,7 @@ __declspec(dllexport) ::HRESULT WINAPI IDirect3DDevice9_CreateTexture_hook(
         if (auto *recycled = eluvian::TextureRecycler::instance().acquire(key); recycled != nullptr)
         {
             *ppTexture = recycled;
-            tracked_textures.track(recycled);
+            eluvian::stats::live_textures.track(recycled);
             remember_texture(recycled, bytes, pool);
             return S_OK;
         }
@@ -708,26 +510,26 @@ __declspec(dllexport) ::HRESULT WINAPI IDirect3DDevice9_CreateTexture_hook(
     {
         res = original(that, Width, Height, Levels, Usage, Format, D3DPOOL_MANAGED, ppTexture, pSharedHandle);
         pool = D3DPOOL_MANAGED;
-        pool_reverts.fetch_add(1u, std::memory_order_relaxed);
+        eluvian::stats::pool_reverts.fetch_add(1u, std::memory_order_relaxed);
         pool_overridden = false;
     }
 
     if (pool_overridden)
     {
-        pool_overrides.fetch_add(1u, std::memory_order_relaxed);
-        pool_override_bytes.fetch_add(bytes, std::memory_order_relaxed);
+        eluvian::stats::pool_overrides.fetch_add(1u, std::memory_order_relaxed);
+        eluvian::stats::pool_override_bytes.fetch_add(bytes, std::memory_order_relaxed);
     }
 
     if (FAILED(res) && config.rescue.on_failure && !in_rescue && ppTexture != nullptr)
     {
         in_rescue = true;
-        rescue_attempts.fetch_add(1u, std::memory_order_relaxed);
+        eluvian::stats::rescue_attempts.fetch_add(1u, std::memory_order_relaxed);
 
         reclaim(that);
         const auto retry = original(that, Width, Height, Levels, Usage, Format, Pool, ppTexture, pSharedHandle);
         if (SUCCEEDED(retry))
         {
-            rescue_successes.fetch_add(1u, std::memory_order_relaxed);
+            eluvian::stats::rescue_successes.fetch_add(1u, std::memory_order_relaxed);
         }
 
         res = retry;
@@ -738,7 +540,7 @@ __declspec(dllexport) ::HRESULT WINAPI IDirect3DDevice9_CreateTexture_hook(
     auto *texture = (SUCCEEDED(res) && ppTexture != nullptr) ? *ppTexture : nullptr;
     if (texture != nullptr)
     {
-        tracked_textures.track(texture);
+        eluvian::stats::live_textures.track(texture);
         remember_texture(texture, bytes, pool);
         eluvian::TextureRecycler::instance().note_created(texture, key, bytes);
         com_hook.add_hook<2zu>(texture, IDirect3DTexture9_Release_hook);
@@ -869,7 +671,7 @@ __declspec(dllexport) ::HRESULT WINAPI IDirect3DStateBlock9_Release_hook(::PROC 
 
     if (res == 0)
     {
-        tracked_state_blocks.untrack(that);
+        eluvian::stats::live_state_blocks.untrack(that);
     }
 
     return res;
@@ -888,7 +690,7 @@ __declspec(dllexport) ::HRESULT WINAPI IDirect3DDevice9_CreateStateBlock_hook(
     if (SUCCEEDED(res) && ppSB != nullptr && *ppSB != nullptr)
     {
         com_hook.add_hook<2zu>(*ppSB, IDirect3DStateBlock9_Release_hook);
-        tracked_state_blocks.track(*ppSB);
+        eluvian::stats::live_state_blocks.track(*ppSB);
     }
 
     return res;
@@ -964,7 +766,7 @@ extern "C"
                     std::to_string(::GetCurrentProcessId()));
         }
 
-        overlay_visible.store(config.overlay, std::memory_order_relaxed);
+        eluvian::overlay::set_visible(config.overlay);
 
         eluvian::TextureRecycler::instance().configure(
             config.recycler.enabled, config.recycler.budget_bytes, config.recycler.max_per_key);

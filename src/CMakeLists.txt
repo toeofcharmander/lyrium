@@ -1,4 +1,4 @@
-add_library(eluvian INTERFACE)
+﻿add_library(eluvian INTERFACE)
 
 target_include_directories(eluvian INTERFACE ${PROJECT_SOURCE_DIR}/include)
 
@@ -53,6 +53,7 @@ endif()
 
 add_library(d3d9 SHARED
   d3d9.cpp
+  overlay.cpp
   engine_hooks.cpp
   d3d9.def
 )
