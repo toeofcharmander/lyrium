@@ -7,3 +7,4 @@ As this doesn't happen on console, it's likely due to the higher resolution text
 The engine writes textures by locking that duplicate, and DEFAULT textures textures can't be locked down. So when the game locks a texture, it now gets handed a temporary buffer instead. It fills that with the relevant pixels, copies it over to the graphics card, and discards the buffer immediately. The engine can't tell the difference. 
 
 Big thanks to Nathan Baggs for the initial research into this.
+https://github.com/nathan-baggs/mandrel
