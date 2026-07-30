@@ -27,6 +27,7 @@
 #include "eluvian/diag/va_space.h"
 #include "eluvian/hooks/com_hook.h"
 #include "eluvian/log.h"
+#include "eluvian/resettable_texture.h"
 #include "eluvian/resource_tracker.h"
 #include "eluvian/texture_recycler.h"
 #include "eluvian/texture_stager.h"
@@ -102,6 +103,14 @@ auto forget_texture(void *texture) -> void
     eluvian::stats::texture_bytes_by_pool[pool_index(static_cast<::D3DPOOL>(pool))].fetch_sub(bytes, std::memory_order_relaxed);
     eluvian::stats::texture_bytes_live.fetch_sub(bytes, std::memory_order_relaxed);
     eluvian::diag::note_texture_released(pool, bytes);
+}
+
+auto forget_resettable_texture(::IDirect3DTexture9 *texture) -> void
+{
+    if (eluvian::stats::live_textures.untrack(texture))
+    {
+        forget_texture(texture);
+    }
 }
 
 auto note_create(::HRESULT hr, std::uint64_t bytes) -> void
@@ -239,6 +248,21 @@ __declspec(dllexport) ::HRESULT WINAPI IDirect3DDevice9_CreateTexture_hook(
     ::D3DPOOL Pool,
     ::IDirect3DTexture9 **ppTexture,
     ::HANDLE *pSharedHandle);
+__declspec(dllexport) ::HRESULT WINAPI IDirect3DDevice9_GetTexture_hook(
+    ::PROC orig_func,
+    void *that,
+    ::DWORD Stage,
+    ::IDirect3DBaseTexture9 **ppTexture);
+__declspec(dllexport) ::HRESULT WINAPI IDirect3DDevice9_SetTexture_hook(
+    ::PROC orig_func,
+    void *that,
+    ::DWORD Stage,
+    ::IDirect3DBaseTexture9 *pTexture);
+__declspec(dllexport) ::HRESULT WINAPI IDirect3DDevice9_UpdateTexture_hook(
+    ::PROC orig_func,
+    void *that,
+    ::IDirect3DBaseTexture9 *pSourceTexture,
+    ::IDirect3DBaseTexture9 *pDestinationTexture);
 __declspec(dllexport) ::HRESULT WINAPI IDirect3DDevice9_CreateCubeTexture_hook(
     ::PROC orig_func,
     void *that,
@@ -514,7 +538,9 @@ __declspec(dllexport) ::HRESULT WINAPI IDirect3DDevice9_CreateTexture_hook(
     if (config.texture_pool.prefer_default && Pool == D3DPOOL_MANAGED &&
         eluvian::diag::is_block_compressed(Format) &&
         bytes >= config.texture_pool.minimum_bytes &&
-        (Usage & (D3DUSAGE_RENDERTARGET | D3DUSAGE_DEPTHSTENCIL | D3DUSAGE_DYNAMIC)) == 0)
+        (Usage &
+         (D3DUSAGE_RENDERTARGET | D3DUSAGE_DEPTHSTENCIL | D3DUSAGE_DYNAMIC |
+          D3DUSAGE_AUTOGENMIPMAP)) == 0)
     {
         pool = D3DPOOL_DEFAULT;
         pool_overridden = true;
@@ -528,7 +554,7 @@ __declspec(dllexport) ::HRESULT WINAPI IDirect3DDevice9_CreateTexture_hook(
         .format = static_cast<std::uint32_t>(Format),
         .pool = static_cast<std::uint32_t>(pool)};
 
-    if (ppTexture != nullptr)
+    if (!pool_overridden && ppTexture != nullptr)
     {
         if (auto *recycled = eluvian::TextureRecycler::instance().acquire(key); recycled != nullptr)
         {
@@ -540,6 +566,33 @@ __declspec(dllexport) ::HRESULT WINAPI IDirect3DDevice9_CreateTexture_hook(
     }
 
     auto res = original(that, Width, Height, Levels, Usage, Format, pool, ppTexture, pSharedHandle);
+    if (pool_overridden && SUCCEEDED(res) && ppTexture != nullptr && *ppTexture != nullptr)
+    {
+        auto *created = *ppTexture;
+        auto *wrapped = eluvian::make_resettable_texture(
+            reinterpret_cast<::IDirect3DDevice9 *>(that),
+            original,
+            created,
+            eluvian::ResettableTextureShape{
+                .width = Width,
+                .height = Height,
+                .levels = Levels,
+                .usage = Usage,
+                .format = Format,
+            },
+            forget_resettable_texture);
+        if (wrapped != nullptr)
+        {
+            created->Release();
+            *ppTexture = wrapped;
+        }
+        else
+        {
+            created->Release();
+            *ppTexture = nullptr;
+            res = E_OUTOFMEMORY;
+        }
+    }
     if (pool_overridden && FAILED(res) && config.texture_pool.fall_back_to_managed)
     {
         res = original(that, Width, Height, Levels, Usage, Format, D3DPOOL_MANAGED, ppTexture, pSharedHandle);
@@ -576,22 +629,66 @@ __declspec(dllexport) ::HRESULT WINAPI IDirect3DDevice9_CreateTexture_hook(
     {
         eluvian::stats::live_textures.track(texture);
         remember_texture(texture, bytes, pool);
-        eluvian::TextureRecycler::instance().note_created(texture, key, bytes);
-        com_hook.add_hook<2zu>(texture, IDirect3DTexture9_Release_hook);
-
         if (pool_overridden)
         {
-
-            eluvian::TextureStager::instance().track(
-                texture,
-                eluvian::TextureStager::Shape{
-                    .width = Width, .height = Height, .levels = Levels, .format = Format});
-            com_hook.add_hook<19zu>(texture, IDirect3DTexture9_LockRect_hook);
-            com_hook.add_hook<20zu>(texture, IDirect3DTexture9_UnlockRect_hook);
+            return res;
         }
+
+        eluvian::TextureRecycler::instance().note_created(texture, key, bytes);
+        com_hook.add_hook<2zu>(texture, IDirect3DTexture9_Release_hook);
     }
 
     return res;
+}
+
+__declspec(dllexport) ::HRESULT WINAPI IDirect3DDevice9_GetTexture_hook(
+    ::PROC orig_func,
+    void *that,
+    ::DWORD Stage,
+    ::IDirect3DBaseTexture9 **ppTexture)
+{
+    using orig_call_type = OrigFuncType<decltype(&IDirect3DDevice9_GetTexture_hook)>;
+
+    const auto result = reinterpret_cast<orig_call_type>(orig_func)(that, Stage, ppTexture);
+    if (SUCCEEDED(result) && ppTexture != nullptr && *ppTexture != nullptr)
+    {
+        *ppTexture = eluvian::rewrap_resettable_texture(*ppTexture);
+    }
+    return result;
+}
+
+__declspec(dllexport) ::HRESULT WINAPI IDirect3DDevice9_SetTexture_hook(
+    ::PROC orig_func,
+    void *that,
+    ::DWORD Stage,
+    ::IDirect3DBaseTexture9 *pTexture)
+{
+    using orig_call_type = OrigFuncType<decltype(&IDirect3DDevice9_SetTexture_hook)>;
+
+    auto *texture = eluvian::unwrap_resettable_texture(pTexture);
+    if (pTexture != nullptr && texture == nullptr)
+    {
+        return D3DERR_DEVICELOST;
+    }
+    return reinterpret_cast<orig_call_type>(orig_func)(that, Stage, texture);
+}
+
+__declspec(dllexport) ::HRESULT WINAPI IDirect3DDevice9_UpdateTexture_hook(
+    ::PROC orig_func,
+    void *that,
+    ::IDirect3DBaseTexture9 *pSourceTexture,
+    ::IDirect3DBaseTexture9 *pDestinationTexture)
+{
+    using orig_call_type = OrigFuncType<decltype(&IDirect3DDevice9_UpdateTexture_hook)>;
+
+    auto *source = eluvian::unwrap_resettable_texture(pSourceTexture);
+    auto *destination = eluvian::unwrap_resettable_texture(pDestinationTexture);
+    if ((pSourceTexture != nullptr && source == nullptr) ||
+        (pDestinationTexture != nullptr && destination == nullptr))
+    {
+        return D3DERR_DEVICELOST;
+    }
+    return reinterpret_cast<orig_call_type>(orig_func)(that, source, destination);
 }
 
 __declspec(dllexport) ::HRESULT WINAPI IDirect3DDevice9_CreateCubeTexture_hook(
@@ -676,7 +773,7 @@ __declspec(dllexport) ::HRESULT WINAPI IDirect3DDevice9_Reset_hook(
     using orig_call_type = OrigFuncType<decltype(&IDirect3DDevice9_Reset_hook)>;
 
     eluvian::overlay::before_device_reset();
-    eluvian::dao::emergency_clear_texture_cache();
+    eluvian::before_resettable_texture_reset(reinterpret_cast<::IDirect3DDevice9 *>(that));
 
     const auto purged = eluvian::TextureRecycler::instance().purge();
     if (purged > 0u)
@@ -686,6 +783,7 @@ __declspec(dllexport) ::HRESULT WINAPI IDirect3DDevice9_Reset_hook(
     eluvian::diag::Sampler::instance().sample_now("before_reset");
 
     const auto res = reinterpret_cast<orig_call_type>(orig_func)(that, pPresentationParameters);
+    eluvian::after_resettable_texture_reset();
 
     if (SUCCEEDED(res))
     {
@@ -775,8 +873,11 @@ __declspec(dllexport) ::HRESULT WINAPI IDirect3D9_CreateDevice_hook(
     com_hook.add_hook<26zu>(device, IDirect3DDevice9_CreateVertexBuffer_hook);
     com_hook.add_hook<27zu>(device, IDirect3DDevice9_CreateIndexBuffer_hook);
     com_hook.add_hook<28zu>(device, IDirect3DDevice9_CreateRenderTarget_hook);
+    com_hook.add_hook<31zu>(device, IDirect3DDevice9_UpdateTexture_hook);
     com_hook.add_hook<42zu>(device, IDirect3DDevice9_EndScene_Hook);
     com_hook.add_hook<60zu>(device, IDirect3DDevice9_CreateStateBlock_hook);
+    com_hook.add_hook<64zu>(device, IDirect3DDevice9_GetTexture_hook);
+    com_hook.add_hook<65zu>(device, IDirect3DDevice9_SetTexture_hook);
     com_hook.add_hook<100zu>(device, IDirect3DDevice9_SetStreamSource_hook);
 
     auto identifier = ::D3DADAPTER_IDENTIFIER9{};

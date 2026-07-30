@@ -53,7 +53,9 @@ add_library(d3d9 SHARED
   d3d9.cpp
   overlay.cpp
   engine_hooks.cpp
+  resettable_texture.cpp
   d3d9.def
 )
 target_link_libraries(d3d9 PRIVATE eluvian imguilib dwmapi psapi)
+target_compile_options(d3d9 PRIVATE -Wno-microsoft-exception-spec)
 set_target_properties(d3d9 PROPERTIES PREFIX "")
