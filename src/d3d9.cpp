@@ -512,6 +512,7 @@ __declspec(dllexport) ::HRESULT WINAPI IDirect3DDevice9_CreateTexture_hook(
     auto pool = Pool;
     auto pool_overridden = false;
     if (config.texture_pool.prefer_default && Pool == D3DPOOL_MANAGED &&
+        eluvian::diag::is_block_compressed(Format) &&
         bytes >= config.texture_pool.minimum_bytes &&
         (Usage & (D3DUSAGE_RENDERTARGET | D3DUSAGE_DEPTHSTENCIL | D3DUSAGE_DYNAMIC)) == 0)
     {
@@ -674,6 +675,9 @@ __declspec(dllexport) ::HRESULT WINAPI IDirect3DDevice9_Reset_hook(
 {
     using orig_call_type = OrigFuncType<decltype(&IDirect3DDevice9_Reset_hook)>;
 
+    eluvian::overlay::before_device_reset();
+    eluvian::dao::emergency_clear_texture_cache();
+
     const auto purged = eluvian::TextureRecycler::instance().purge();
     if (purged > 0u)
     {
@@ -682,6 +686,11 @@ __declspec(dllexport) ::HRESULT WINAPI IDirect3DDevice9_Reset_hook(
     eluvian::diag::Sampler::instance().sample_now("before_reset");
 
     const auto res = reinterpret_cast<orig_call_type>(orig_func)(that, pPresentationParameters);
+
+    if (SUCCEEDED(res))
+    {
+        eluvian::overlay::after_device_reset();
+    }
 
     eluvian::diag::Sampler::instance().sample_now("after_reset");
 

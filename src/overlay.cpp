@@ -26,6 +26,7 @@ namespace
 
 std::atomic<bool> is_visible{false};
 ::WNDPROC original_window_proc{};
+bool backend_initialised{false};
 
 auto megabytes(std::uint64_t bytes) -> float
 {
@@ -34,12 +35,10 @@ auto megabytes(std::uint64_t bytes) -> float
 
 auto ensure_initialised(::IDirect3DDevice9 *device) -> void
 {
-    static auto done = false;
-    if (done)
+    if (backend_initialised)
     {
         return;
     }
-    done = true;
 
     ::ImGui::SetAllocatorFunctions(imgui_allocator, imgui_deallocator, nullptr);
 
@@ -58,6 +57,7 @@ auto ensure_initialised(::IDirect3DDevice9 *device) -> void
 
     ::ImGui_ImplWin32_Init(window);
     ::ImGui_ImplDX9_Init(device);
+    backend_initialised = true;
 }
 
 auto draw_address_space() -> void
@@ -238,6 +238,22 @@ auto render(::IDirect3DDevice9 *device) -> void
     ::ImGui::EndFrame();
     ::ImGui::Render();
     ::ImGui_ImplDX9_RenderDrawData(::ImGui::GetDrawData());
+}
+
+auto before_device_reset() -> void
+{
+    if (backend_initialised)
+    {
+        ::ImGui_ImplDX9_InvalidateDeviceObjects();
+    }
+}
+
+auto after_device_reset() -> void
+{
+    if (backend_initialised)
+    {
+        ::ImGui_ImplDX9_CreateDeviceObjects();
+    }
 }
 
 auto window_proc(::HWND window, ::UINT message, ::WPARAM wparam, ::LPARAM lparam) -> ::LRESULT

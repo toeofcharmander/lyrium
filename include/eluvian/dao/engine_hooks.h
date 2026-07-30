@@ -19,6 +19,7 @@ auto install_engine_hooks(const EngineConfig &config) -> void;
 auto remove_engine_hooks() -> void;
 
 auto emergency_evict(int max_count) -> int;
+auto emergency_clear_texture_cache() -> bool;
 
 auto texture_cache_known() -> bool;
 

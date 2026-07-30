@@ -656,6 +656,20 @@ auto emergency_evict(int max_count) -> int
     return released;
 }
 
+auto emergency_clear_texture_cache() -> bool
+{
+    auto *cache = const_cast<void *>(texture_cache_ptr.load(std::memory_order_relaxed));
+    if (cache == nullptr || !hook_clear.installed() || in_hook)
+    {
+        return false;
+    }
+
+    const auto guard = ReentryGuard{};
+    const auto original = reinterpret_cast<ClearFn>(hook_clear.trampoline());
+    original(cache, nullptr);
+    return true;
+}
+
 auto engine_state() -> EngineState
 {
     auto state = EngineState{};
