@@ -6,10 +6,10 @@
 #include <cstring>
 #include <mutex>
 #include <string>
-#include <unordered_map>
 
 #include <windows.h>
 
+#include "eluvian/containers/unordered_map.h"
 #include "eluvian/dao/inline_hook.h"
 #include "eluvian/dao/targets.h"
 #include "eluvian/log.h"
@@ -85,6 +85,39 @@ std::atomic<std::uint64_t> counter_realloc_calls{};
 std::atomic<std::uint64_t> counter_malloc_total_bytes{};
 std::atomic<std::uint64_t> counter_malloc_largest{};
 
+std::atomic<std::uint32_t> traced_hook_calls{};
+
+class FirstCallTrace
+{
+  public:
+    FirstCallTrace(std::uint32_t bit, const char *enter, const char *leave)
+        : enter_{enter}
+        , leave_{leave}
+        , first_{(traced_hook_calls.fetch_or(bit, std::memory_order_relaxed) & bit) == 0u}
+    {
+        if (first_)
+        {
+            breadcrumb(enter_);
+        }
+    }
+
+    ~FirstCallTrace()
+    {
+        if (first_)
+        {
+            breadcrumb(leave_);
+        }
+    }
+
+    FirstCallTrace(const FirstCallTrace &) = delete;
+    auto operator=(const FirstCallTrace &) -> FirstCallTrace & = delete;
+
+  private:
+    const char *enter_;
+    const char *leave_;
+    bool first_;
+};
+
 struct D3DResultSlot
 {
     std::int32_t hr;
@@ -125,7 +158,7 @@ struct LiveAllocation
 };
 
 std::mutex allocation_mutex;
-std::unordered_map<const void *, LiveAllocation> live_allocations;
+UnorderedMap<const void *, LiveAllocation> live_allocations;
 std::atomic<std::uint64_t> live_allocation_bytes{};
 
 constexpr auto cache_texture_memory_offset = std::size_t{104};
@@ -162,6 +195,8 @@ ELUVIAN_THISCALL auto load_texture_file_detour(
     const void *path,
     int option) -> void *
 {
+    const auto trace = FirstCallTrace{
+        1u << 0u, "engine load_texture_file: enter", "engine load_texture_file: returned"};
     const auto guard = ReentryGuard{};
 
     const auto original = reinterpret_cast<LoadTextureFileFn>(hook_load_texture_file.trampoline());
@@ -183,6 +218,8 @@ ELUVIAN_THISCALL auto create_texture_cached_detour(
     int usage,
     int format) -> void *
 {
+    const auto trace = FirstCallTrace{
+        1u << 1u, "engine create_texture_cached: enter", "engine create_texture_cached: returned"};
     const auto guard = ReentryGuard{};
 
     const auto original = reinterpret_cast<CreateTextureCachedFn>(hook_create_texture_cached.trampoline());
@@ -204,6 +241,10 @@ ELUVIAN_THISCALL auto create_texture_registered_detour(
     int f,
     int g) -> void *
 {
+    const auto trace = FirstCallTrace{
+        1u << 2u,
+        "engine create_texture_registered: enter",
+        "engine create_texture_registered: returned"};
     const auto guard = ReentryGuard{};
 
     const auto original = reinterpret_cast<CreateTextureRegisteredFn>(hook_create_texture_registered.trampoline());
@@ -221,6 +262,8 @@ ELUVIAN_THISCALL auto stream_load_detour(
     int b,
     int c) -> void *
 {
+    const auto trace =
+        FirstCallTrace{1u << 3u, "engine stream_load: enter", "engine stream_load: returned"};
     const auto guard = ReentryGuard{};
 
     const auto original = reinterpret_cast<StreamLoadFn>(hook_stream_load.trampoline());
@@ -236,6 +279,8 @@ ELUVIAN_STDCALL auto decode_texture_memory_detour(
     void *owner,
     int unused) -> void *
 {
+    const auto trace = FirstCallTrace{
+        1u << 4u, "engine decode_texture_memory: enter", "engine decode_texture_memory: returned"};
     const auto guard = ReentryGuard{};
 
     last_d3d_result.valid = false;
@@ -256,6 +301,8 @@ ELUVIAN_THISCALL auto create_texture_2d_detour(
     int format_index,
     int pool_index) -> void *
 {
+    const auto trace = FirstCallTrace{
+        1u << 5u, "engine create_texture_2d: enter", "engine create_texture_2d: returned"};
     const auto guard = ReentryGuard{};
 
     last_d3d_result.valid = false;
@@ -285,6 +332,10 @@ ELUVIAN_THISCALL auto create_texture_from_memory_detour(
     const void *source,
     unsigned int size) -> void *
 {
+    const auto trace = FirstCallTrace{
+        1u << 6u,
+        "engine create_texture_from_memory: enter",
+        "engine create_texture_from_memory: returned"};
     const auto guard = ReentryGuard{};
 
     const auto original = reinterpret_cast<CreateTextureFromMemoryFn>(hook_create_texture_from_memory.trampoline());
@@ -305,6 +356,10 @@ ELUVIAN_THISCALL auto create_volume_from_memory_detour(
     int e,
     int f) -> void *
 {
+    const auto trace = FirstCallTrace{
+        1u << 7u,
+        "engine create_volume_from_memory: enter",
+        "engine create_volume_from_memory: returned"};
     const auto guard = ReentryGuard{};
 
     const auto original = reinterpret_cast<CreateVolumeFromMemoryFn>(hook_create_volume_from_memory.trampoline());
@@ -315,6 +370,8 @@ ELUVIAN_THISCALL auto create_volume_from_memory_detour(
 
 ELUVIAN_THISCALL auto evict_detour(void *self, void *edx, int max_count) -> void
 {
+    const auto trace =
+        FirstCallTrace{1u << 8u, "engine texture_cache_evict: enter", "engine texture_cache_evict: returned"};
     const auto guard = ReentryGuard{};
 
     texture_cache_ptr.store(self, std::memory_order_relaxed);
@@ -341,6 +398,8 @@ ELUVIAN_THISCALL auto evict_detour(void *self, void *edx, int max_count) -> void
 
 ELUVIAN_THISCALL auto clear_detour(void *self, void *edx) -> void
 {
+    const auto trace =
+        FirstCallTrace{1u << 9u, "engine texture_cache_clear: enter", "engine texture_cache_clear: returned"};
     const auto guard = ReentryGuard{};
 
     texture_cache_ptr.store(self, std::memory_order_relaxed);
@@ -397,6 +456,8 @@ auto untrack_allocation(void *pointer) -> void
 
 ELUVIAN_CDECL auto malloc_detour(std::size_t size) -> void *
 {
+    const auto trace =
+        FirstCallTrace{1u << 10u, "engine malloc: enter", "engine malloc: returned"};
     counter_malloc_calls.fetch_add(1u, std::memory_order_relaxed);
     counter_malloc_total_bytes.fetch_add(size, std::memory_order_relaxed);
     auto largest = counter_malloc_largest.load(std::memory_order_relaxed);
@@ -419,6 +480,8 @@ ELUVIAN_CDECL auto malloc_detour(std::size_t size) -> void *
 
 ELUVIAN_CDECL auto free_detour(void *pointer) -> void
 {
+    const auto trace =
+        FirstCallTrace{1u << 11u, "engine free: enter", "engine free: returned"};
     counter_free_calls.fetch_add(1u, std::memory_order_relaxed);
 
     if (!in_hook)
@@ -433,6 +496,8 @@ ELUVIAN_CDECL auto free_detour(void *pointer) -> void
 
 ELUVIAN_CDECL auto realloc_detour(void *pointer, std::size_t size) -> void *
 {
+    const auto trace =
+        FirstCallTrace{1u << 12u, "engine realloc: enter", "engine realloc: returned"};
     counter_realloc_calls.fetch_add(1u, std::memory_order_relaxed);
 
     const auto original = reinterpret_cast<ReallocFn>(hook_realloc.trampoline());
@@ -460,7 +525,13 @@ ELUVIAN_CDECL auto realloc_detour(void *pointer, std::size_t size) -> void *
 auto install(InlineHook &hook, TargetId id, void *detour) -> void
 {
     const auto &entry = target(id);
-    hook.install(entry, detour, image_base_delta());
+    const auto delta = image_base_delta();
+    hook.install(entry, detour, delta);
+    log(
+        "engine hook {}: {} at {:#010x}",
+        entry.name,
+        InlineHook::status_name(hook.status()),
+        entry.address + static_cast<std::uintptr_t>(delta));
 }
 
 }

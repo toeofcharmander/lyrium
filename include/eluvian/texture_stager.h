@@ -2,11 +2,11 @@
 
 #include <atomic>
 #include <cstdint>
-#include <map>
 #include <mutex>
 
 #include <d3d9.h>
 
+#include "eluvian/containers/map.h"
 #include "eluvian/diag/texture_size.h"
 
 namespace eluvian
@@ -347,7 +347,7 @@ class TextureStager
     TextureStager() = default;
 
     std::mutex mutex_;
-    std::map<::IDirect3DTexture9 *, Entry> staged_;
+    Map<::IDirect3DTexture9 *, Entry> staged_;
 
     std::atomic<::IDirect3DDevice9 *> device_{nullptr};
     std::uint64_t staging_created_{0};
@@ -358,7 +358,7 @@ class TextureStager
     std::uint32_t first_failure_format_{0};
     std::uint32_t first_failure_width_{0};
     std::uint32_t first_failure_height_{0};
-    std::map<std::uint32_t, std::uint64_t> failed_formats_;
+    Map<std::uint32_t, std::uint64_t> failed_formats_;
     bool enabled_{false};
 };
 

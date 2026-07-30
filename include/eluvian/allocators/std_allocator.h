@@ -1,6 +1,8 @@
 #pragma once
 
 #include <cstddef>
+#include <limits>
+#include <new>
 #include <type_traits>
 
 #include "eluvian/allocators/global_allocator.h"
@@ -25,6 +27,10 @@ class STDAllocator
 
     [[nodiscard]] auto allocate(std::size_t n) -> T *
     {
+        if (n > std::numeric_limits<std::size_t>::max() / sizeof(T))
+        {
+            throw std::bad_array_new_length{};
+        }
         return static_cast<T *>(GlobalAllocator::allocate(n * sizeof(T)));
     }
 

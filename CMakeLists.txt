@@ -10,8 +10,6 @@ project(
 include(FetchContent)
 
 option(ELUVIAN_BUILD_TESTS "Build the unit tests (needs googletest)" OFF)
-# The DLL must be loadable by the game with nothing else installed alongside it,
-# so the runtime is linked in rather than shipped as separate DLLs.
 option(ELUVIAN_STATIC_RUNTIME "Link the C++ runtime statically" ON)
 
 set(CMAKE_SKIP_PACKAGE_ALL_DEPENDENCY ON)

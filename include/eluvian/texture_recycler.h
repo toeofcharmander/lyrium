@@ -2,11 +2,12 @@
 
 #include <atomic>
 #include <cstdint>
-#include <map>
 #include <mutex>
-#include <vector>
 
 #include <d3d9.h>
+
+#include "eluvian/containers/map.h"
+#include "eluvian/containers/vector.h"
 
 namespace eluvian
 {
@@ -133,7 +134,7 @@ class TextureRecycler
 
     auto purge() -> std::uint32_t
     {
-        auto victims = std::vector<::IDirect3DTexture9 *>{};
+        auto victims = Vector<::IDirect3DTexture9 *>{};
         {
             auto lock = std::scoped_lock{mutex_};
             for (auto &[key, bucket] : idle_)
@@ -198,8 +199,8 @@ class TextureRecycler
     TextureRecycler() = default;
 
     std::mutex mutex_;
-    std::map<Key, std::vector<IdleEntry>> idle_;
-    std::map<::IDirect3DTexture9 *, LiveEntry> live_;
+    Map<Key, Vector<IdleEntry>> idle_;
+    Map<::IDirect3DTexture9 *, LiveEntry> live_;
 
     std::uint64_t idle_bytes_{0};
     std::uint64_t idle_count_{0};

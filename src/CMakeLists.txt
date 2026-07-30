@@ -10,6 +10,7 @@ target_sources(eluvian INTERFACE
   ${PROJECT_SOURCE_DIR}/include/eluvian/config.h
   ${PROJECT_SOURCE_DIR}/include/eluvian/log.h
   ${PROJECT_SOURCE_DIR}/include/eluvian/sha256.h
+  ${PROJECT_SOURCE_DIR}/include/eluvian/containers/map.h
   ${PROJECT_SOURCE_DIR}/include/eluvian/dao/targets.h
   ${PROJECT_SOURCE_DIR}/include/eluvian/dao/inline_hook.h
   ${PROJECT_SOURCE_DIR}/include/eluvian/dao/engine_hooks.h
@@ -40,9 +41,6 @@ target_compile_options(eluvian INTERFACE
 target_compile_features(eluvian INTERFACE cxx_std_26)
 target_compile_definitions(eluvian INTERFACE -DNOMINMAX)
 
-# stdc++exp is a libstdc++ library (it carries the C++23 <stacktrace> and <print>
-# support). It does not exist when the toolchain uses libc++, so only ask for it
-# where it is actually available.
 include(CheckCXXSourceCompiles)
 set(CMAKE_REQUIRED_LIBRARIES stdc++exp)
 check_cxx_source_compiles("int main() { return 0; }" ELUVIAN_HAVE_STDCXXEXP)
@@ -57,6 +55,5 @@ add_library(d3d9 SHARED
   engine_hooks.cpp
   d3d9.def
 )
-# psapi for the module and working set queries, d3d9 for the device interfaces.
 target_link_libraries(d3d9 PRIVATE eluvian imguilib dwmapi psapi)
 set_target_properties(d3d9 PROPERTIES PREFIX "")

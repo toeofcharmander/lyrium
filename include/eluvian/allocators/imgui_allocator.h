@@ -2,19 +2,33 @@
 
 #include <cstddef>
 
-#include "eluvian/allocators/global_allocator.h"
+#include <windows.h>
 
 namespace eluvian
 {
 
+namespace detail
+{
+inline auto imgui_heap() -> ::HANDLE
+{
+    static const auto handle = ::HeapCreate(0, 0, 0);
+    return handle;
+}
+}
+
 inline auto imgui_allocator(std::size_t size, void *)
 {
-    return GlobalAllocator::allocate(size);
+    const auto heap = detail::imgui_heap();
+    return heap != nullptr ? ::HeapAlloc(heap, 0, size == 0u ? 1u : size) : nullptr;
 }
 
 inline auto imgui_deallocator(void *allocation, void *)
 {
-    GlobalAllocator::deallocate(allocation);
+    const auto heap = detail::imgui_heap();
+    if (heap != nullptr && allocation != nullptr)
+    {
+        ::HeapFree(heap, 0, allocation);
+    }
 }
 
 }

@@ -106,8 +106,18 @@ auto forget_texture(void *texture) -> void
 
 auto note_create(::HRESULT hr, std::uint64_t bytes) -> void
 {
-    eluvian::stats::d3d_creates.fetch_add(1u, std::memory_order_relaxed);
+    const auto count =
+        eluvian::stats::d3d_creates.fetch_add(1u, std::memory_order_relaxed) + 1u;
     eluvian::dao::note_d3d_create_result(static_cast<std::int32_t>(hr), bytes);
+
+    if (count <= 8u || count % 256u == 0u || FAILED(hr))
+    {
+        eluvian::log(
+            "d3d create #{}: hr={:#010x}, bytes={}",
+            count,
+            static_cast<std::uint32_t>(hr),
+            bytes);
+    }
 
     if (FAILED(hr))
     {
@@ -136,6 +146,29 @@ auto main_pool_override_bytes() -> std::uint32_t
 }
 
 eluvian::dao::PoolPatchResult pool_patch_result{};
+const char *allocation_watch_mode{"not attempted"};
+
+auto enable_allocation_watch() -> void
+{
+    static constexpr auto threshold = 8ull * 1024ull * 1024ull;
+
+    if (eluvian::diag::install_nt_alloc_hook(threshold))
+    {
+        allocation_watch_mode = "NtAllocateVirtualMemory";
+    }
+    else if (eluvian::diag::install_virtual_alloc_hook(threshold))
+    {
+        allocation_watch_mode = "VirtualAlloc";
+    }
+    else if (eluvian::diag::install_alloc_watch(threshold))
+    {
+        allocation_watch_mode = "main executable IAT";
+    }
+    else
+    {
+        allocation_watch_mode = "unavailable";
+    }
+}
 
 
 
@@ -708,14 +741,21 @@ __declspec(dllexport) ::HRESULT WINAPI IDirect3D9_CreateDevice_hook(
 {
     using orig_call_type = OrigFuncType<decltype(&IDirect3D9_CreateDevice_hook)>;
 
+    eluvian::breadcrumb("d3d CreateDevice: enter");
     const auto res = reinterpret_cast<orig_call_type>(orig_func)(
         that, Adapter, DeviceType, hFocusWindow, BehaviorFlags, pPresentationParameters, ppReturnedDeviceInterface);
+    eluvian::log(
+        "d3d CreateDevice returned hr={:#010x}, output={}",
+        static_cast<std::uint32_t>(res),
+        ppReturnedDeviceInterface != nullptr ? static_cast<void *>(*ppReturnedDeviceInterface) : nullptr);
 
     if (FAILED(res) || ppReturnedDeviceInterface == nullptr || *ppReturnedDeviceInterface == nullptr)
     {
+        eluvian::breadcrumb("d3d CreateDevice: failed");
         return res;
     }
 
+    eluvian::breadcrumb("d3d CreateDevice: installing COM hooks");
     auto *device = *ppReturnedDeviceInterface;
 
     com_hook.add_hook<5zu>(device, IDirect3DDevice9_EvictManagedResources_hook);
@@ -739,6 +779,7 @@ __declspec(dllexport) ::HRESULT WINAPI IDirect3D9_CreateDevice_hook(
 
     eluvian::TextureStager::instance().configure(config.texture_pool.prefer_default, device);
 
+    eluvian::breadcrumb("d3d CreateDevice: returned");
     return res;
 }
 
@@ -756,6 +797,15 @@ extern "C"
 
         config = eluvian::load_config();
 
+        if (config.allocation_watch)
+        {
+            enable_allocation_watch();
+        }
+        else
+        {
+            allocation_watch_mode = "disabled";
+        }
+
         eluvian::log_set_enabled(config.logging);
 
         if (config.logging)
@@ -764,6 +814,26 @@ extern "C"
                 config.log_directory,
                 "eluvian_" + eluvian::wall_clock("%Y%m%d_%H%M%S") + "_" +
                     std::to_string(::GetCurrentProcessId()));
+            eluvian::breadcrumb_reset(config.log_directory);
+            eluvian::breadcrumb("Direct3DCreate9: logging started");
+            eluvian::log("eluvian diagnostic startup, pid={}", ::GetCurrentProcessId());
+            eluvian::log(
+                "config: engine_hooks={}, cache_hooks={}, allocator_hooks={}, allocation_watch={}, overlay={}, "
+                "texture_pool_default={}, recycler={}, sample_interval_ms={}",
+                config.engine.hook_texture_paths,
+                config.engine.hook_cache,
+                config.engine.hook_allocator,
+                config.allocation_watch,
+                config.overlay,
+                config.texture_pool.prefer_default,
+                config.recycler.enabled,
+                config.sample_interval_ms);
+            eluvian::log("allocation watch: {}", allocation_watch_mode);
+            eluvian::log(
+                "main pool patch: {} (original={}, patched={})",
+                pool_patch_result.reason != nullptr ? pool_patch_result.reason : "unknown",
+                pool_patch_result.original_bytes,
+                pool_patch_result.patched_bytes);
         }
 
         eluvian::overlay::set_visible(config.overlay);
@@ -771,28 +841,35 @@ extern "C"
         eluvian::TextureRecycler::instance().configure(
             config.recycler.enabled, config.recycler.budget_bytes, config.recycler.max_per_key);
 
+        eluvian::breadcrumb("Direct3DCreate9: installing engine hooks");
         eluvian::dao::install_engine_hooks(config.engine);
+        eluvian::breadcrumb("Direct3DCreate9: engine hooks installed");
 
         eluvian::diag::Sampler::instance().start(config.sample_interval_ms);
+        eluvian::breadcrumb("Direct3DCreate9: sampler started");
 
     }
 
+    eluvian::breadcrumb("Direct3DCreate9: loading system d3d9");
     char system_path[MAX_PATH]{};
     ::GetSystemDirectoryA(system_path, MAX_PATH);
     const auto d3d9_path = std::string{system_path} + "\\d3d9.dll";
 
     const auto d3d9_lib = ::LoadLibraryA(d3d9_path.c_str());
     eluvian::ensure(d3d9_lib != nullptr, "could not load {}", d3d9_path);
+    eluvian::breadcrumb("Direct3DCreate9: system d3d9 loaded");
 
     const auto direct_create =
         reinterpret_cast<decltype(&Direct3DCreate9)>(::GetProcAddress(d3d9_lib, "Direct3DCreate9"));
     eluvian::ensure(direct_create != NULL, "failed to get address of Direct3DCreate9");
 
     auto *d3d9 = direct_create(SDKVersion);
+    eluvian::log("system Direct3DCreate9 returned {}", static_cast<void *>(d3d9));
 
     if (d3d9 != nullptr)
     {
         com_hook.add_hook<16zu>(d3d9, IDirect3D9_CreateDevice_hook);
+        eluvian::breadcrumb("Direct3DCreate9: proxy hook installed");
     }
 
     return d3d9;
@@ -815,15 +892,6 @@ extern "C"
         }
         case DLL_PROCESS_ATTACH:
         {
-
-            static constexpr auto threshold = 8ull * 1024ull * 1024ull;
-
-            if (!eluvian::diag::install_nt_alloc_hook(threshold) &&
-                !eluvian::diag::install_virtual_alloc_hook(threshold))
-            {
-                eluvian::diag::install_alloc_watch(threshold);
-            }
-
             pool_patch_result = eluvian::dao::patch_main_pool(main_pool_override_bytes());
             break;
         }

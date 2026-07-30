@@ -29,7 +29,7 @@ struct RescueConfig
 
 struct TexturePoolConfig
 {
-    bool prefer_default{false};
+    bool prefer_default{true};
 
     std::uint64_t minimum_bytes{256ull * 1024ull};
 
@@ -52,8 +52,9 @@ struct Config
     RecyclerConfig recycler{};
     std::int64_t sample_interval_ms{5000};
     bool overlay{true};
+    bool allocation_watch{false};
 
-    bool logging{true};
+    bool logging{false};
 
     std::filesystem::path log_directory{};
 };
@@ -122,7 +123,8 @@ inline auto load_config() -> Config
     config.engine.hook_allocator = parse_bool(lookup("allocator_hooks"), false);
 
     config.overlay = parse_bool(lookup("overlay"), false);
-    config.logging = parse_bool(lookup("logging"), true);
+    config.allocation_watch = parse_bool(lookup("allocation_watch"), false);
+    config.logging = parse_bool(lookup("logging"), false);
 
     config.recycler.enabled = parse_bool(lookup("recycler"), false);
     if (const auto value = lookup("recycler_budget_mb"); !value.empty())
@@ -134,7 +136,7 @@ inline auto load_config() -> Config
         config.recycler.max_per_key = static_cast<std::uint32_t>(std::strtoul(value.c_str(), nullptr, 10));
     }
 
-    config.texture_pool.prefer_default = parse_bool(lookup("texture_pool_default"), false);
+    config.texture_pool.prefer_default = parse_bool(lookup("texture_pool_default"), true);
     config.texture_pool.fall_back_to_managed = parse_bool(lookup("texture_pool_fallback"), true);
     if (const auto value = lookup("texture_pool_min_kb"); !value.empty())
     {
@@ -175,12 +177,15 @@ inline auto load_config() -> Config
         config.log_directory = directory / "eluvian_logs";
     }
 
-    auto error = std::error_code{};
-    std::filesystem::create_directories(config.log_directory, error);
-    if (error)
+    if (config.logging)
     {
-        config.log_directory = get_temp("eluvian_logs");
+        auto error = std::error_code{};
         std::filesystem::create_directories(config.log_directory, error);
+        if (error)
+        {
+            config.log_directory = get_temp("eluvian_logs");
+            std::filesystem::create_directories(config.log_directory, error);
+        }
     }
 
     return config;
