@@ -1,3 +1,4 @@
+#include "lyrium/com/ref_count.h"
 #include "lyrium/texture/level_validity.h"
 #include "lyrium/resettable_texture.h"
 
@@ -133,17 +134,25 @@ class ResettableTexture final : public ::IDirect3DTexture9
 
     auto STDMETHODCALLTYPE AddRef() -> ::ULONG override
     {
-        return references_.fetch_add(1u, std::memory_order_relaxed) + 1u;
+        return references_.add_ref();
     }
 
     auto STDMETHODCALLTYPE Release() -> ::ULONG override
     {
-        const auto remaining = references_.fetch_sub(1u, std::memory_order_acq_rel) - 1u;
+        const auto remaining = references_.release();
         if (remaining == 0u)
         {
             delete this;
         }
         return remaining;
+    }
+
+    // Takes a reference only if the object is not already dying. The registry
+    // walk uses this instead of AddRef, because an entry is still present in the
+    // registry between Release observing zero and the destructor removing it.
+    [[nodiscard]] auto try_add_ref() -> bool
+    {
+        return references_.try_add_ref();
     }
 
     auto STDMETHODCALLTYPE GetDevice(::IDirect3DDevice9 **device) -> ::HRESULT override
@@ -704,7 +713,7 @@ class ResettableTexture final : public ::IDirect3DTexture9
         ::UnmapViewOfFile(view);
     }
 
-    std::atomic<::ULONG> references_{1u};
+    com::RefCount references_{1u};
     ::IDirect3DDevice9 *device_;
     CreateTextureFn create_texture_;
     std::mutex inner_mutex_;
@@ -914,8 +923,13 @@ auto snapshot_textures() -> Vector<ResettableTexture *>
     result.reserve(registered_textures.size());
     for (auto *texture : registered_textures)
     {
-        texture->AddRef();
-        result.push_back(texture);
+        // An entry is still in this set between Release observing zero and the
+        // destructor erasing it. AddRef here would lift that count back off zero
+        // and hand out a reference to an object already being destroyed.
+        if (texture->try_add_ref())
+        {
+            result.push_back(texture);
+        }
     }
     return result;
 }
