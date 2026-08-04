@@ -1,15 +1,22 @@
-// The single source of truth for the D3D9 enum values the portable code needs.
+// The single source of truth for the pixel format and texture pool values.
 //
-// This list is consumed twice. tests/shim/d3d9.h expands it into real enums so
-// diag/texture_size.h can compile on Linux, and
-// tests/conformance/d3d9_shim_conformance.cpp expands it into static_asserts that
-// are compiled on Windows against the genuine <d3d9.h>. That second expansion is
-// what makes the shim trustworthy: any value that drifts from the real header
-// becomes a build error on the next Windows build rather than a test that quietly
-// measures the wrong thing.
+// These are numerically the D3D9 D3DFMT_* and D3DPOOL_* values, but they are
+// listed here rather than taken from <d3d9.h> so that the portable half of the
+// project never has to include a Windows header. The list is consumed three
+// times:
 //
-// Only the values referenced by diag/texture_size.h are listed. Add to this file,
-// never to the shim header directly.
+//   texture/texture_desc.h        -> the PixelFormat and TexturePool enums used
+//                                    by all policy code
+//   tests/shim/d3d9.h             -> a stand-in <d3d9.h> so the remaining
+//                                    D3D-typed headers compile on Linux
+//   tests/conformance/...cpp      -> static_asserts compiled on Windows against
+//                                    the genuine <d3d9.h>
+//
+// That third expansion is what makes the other two trustworthy: a value that
+// drifts from the real header becomes a build error rather than a test that
+// quietly measures the wrong thing.
+//
+// Add values here, never to a consumer directly.
 
 #pragma once
 

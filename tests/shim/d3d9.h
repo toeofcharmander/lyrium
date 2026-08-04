@@ -11,7 +11,7 @@
 
 #pragma once
 
-#include "d3d9_enum_list.inl"
+#include "lyrium/texture/pixel_format_values.inl"
 
 #define LYRIUM_D3D9_ENUMERATOR(name, value) name = (value),
 

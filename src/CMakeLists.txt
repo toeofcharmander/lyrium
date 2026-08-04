@@ -68,6 +68,9 @@ endif()
 add_library(lyrium_d3d9_shim_conformance OBJECT
   ${PROJECT_SOURCE_DIR}/tests/conformance/d3d9_shim_conformance.cpp
 )
-target_include_directories(lyrium_d3d9_shim_conformance PRIVATE ${PROJECT_SOURCE_DIR}/tests)
+target_include_directories(lyrium_d3d9_shim_conformance PRIVATE
+  ${PROJECT_SOURCE_DIR}/tests
+  ${PROJECT_SOURCE_DIR}/include
+)
 target_compile_features(lyrium_d3d9_shim_conformance PRIVATE cxx_std_26)
 add_dependencies(d3d9 lyrium_d3d9_shim_conformance)
