@@ -620,6 +620,13 @@ __declspec(dllexport) ::HRESULT WINAPI IDirect3DDevice9_CreateTexture_hook(
         if (auto *recycled = lyrium::TextureRecycler::instance().acquire(key); recycled != nullptr)
         {
             *ppTexture = recycled;
+
+            // A recycler hit is still a creation from the game's point of view.
+            // Returning early without counting it made d3d_creates undercount,
+            // hid these calls from the failure counter, and skipped the result
+            // correlation the engine-side diagnostics rely on. It also made the
+            // create sequence in the log jump, which is how it was noticed.
+            note_create(S_OK, bytes);
             remember_texture(recycled, bytes, pool, placement.relocated());
             return S_OK;
         }
@@ -873,16 +880,26 @@ __declspec(dllexport) ::HRESULT WINAPI IDirect3DDevice9_Reset_hook(
     const auto purged = lyrium::TextureRecycler::instance().purge();
     if (purged > 0u)
     {
+        lyrium::log("device reset: purged {} idle textures from the recycler", purged);
     }
 
     lyrium::diag::Sampler::instance().sample_now("before_reset");
 
     const auto res = reinterpret_cast<orig_call_type>(orig_func)(that, pPresentationParameters);
-    lyrium::after_resettable_texture_reset();
 
+    // Only restore once the device is actually back. Recreating DEFAULT-pool
+    // textures on a device whose Reset failed is guaranteed to fail too, and it
+    // used to run unconditionally: every texture would attempt a creation
+    // against a still-lost device, and the shadow copies stay valid regardless,
+    // so the restore is simply deferred to the reset that eventually succeeds.
     if (SUCCEEDED(res))
     {
+        lyrium::after_resettable_texture_reset();
         lyrium::overlay::after_device_reset();
+    }
+    else
+    {
+        lyrium::log("device reset failed (hr={:#010x}), deferring texture restore", static_cast<std::uint32_t>(res));
     }
 
     lyrium::diag::Sampler::instance().sample_now("after_reset");
