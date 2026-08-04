@@ -9,7 +9,6 @@
 #include <thread>
 
 #include "lyrium/dao/engine_hooks.h"
-#include "lyrium/diag/texture_totals.h"
 #include "lyrium/diag/va_space.h"
 #include "lyrium/log.h"
 #include "lyrium/texture_recycler.h"

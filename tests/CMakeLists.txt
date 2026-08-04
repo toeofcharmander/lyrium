@@ -46,8 +46,4 @@ lyrium_add_test(block_rect_test SOURCES unit/block_rect_test.cpp)
 lyrium_add_test(texture_desc_test SOURCES unit/texture_desc_test.cpp)
 lyrium_add_test(texture_placement_policy_test SOURCES unit/texture_placement_policy_test.cpp)
 lyrium_add_test(texture_ledger_test SOURCES unit/texture_ledger_test.cpp)
-lyrium_add_test(texture_totals_test SOURCES unit/texture_totals_test.cpp)
 
-# Own binary: this one drives the process-global counters into a wrapped state,
-# which would corrupt every later assertion sharing the process.
-lyrium_add_test(texture_totals_underflow_test SOURCES unit/texture_totals_underflow_test.cpp)

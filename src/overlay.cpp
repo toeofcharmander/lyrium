@@ -12,7 +12,7 @@
 #include "lyrium/containers/vector.h"
 #include "lyrium/dao/engine_hooks.h"
 #include "lyrium/diag/sampler.h"
-#include "lyrium/diag/texture_totals.h"
+#include "lyrium/texture/dll_texture_ledger.h"
 #include "lyrium/stats.h"
 
 LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
@@ -88,19 +88,23 @@ auto draw_address_space() -> void
 
 auto draw_textures() -> void
 {
-    const auto totals = diag::texture_totals();
+    // One snapshot from the single owner, rather than four reads of counters
+    // that could disagree with each other.
+    const auto totals = texture_ledger().totals();
+    constexpr auto managed = static_cast<std::size_t>(texture::TexturePool::D3DPOOL_MANAGED);
+    constexpr auto def = static_cast<std::size_t>(texture::TexturePool::D3DPOOL_DEFAULT);
 
     ::ImGui::Text(
         "texture memory: %.1f MB live (managed %.1f MB, default %.1f MB)",
-        megabytes(stats::texture_bytes_live.load(std::memory_order_relaxed)),
-        megabytes(stats::texture_bytes_by_pool[D3DPOOL_MANAGED].load(std::memory_order_relaxed)),
-        megabytes(stats::texture_bytes_by_pool[D3DPOOL_DEFAULT].load(std::memory_order_relaxed)));
+        megabytes(totals.total),
+        megabytes(totals.by_pool[managed]),
+        megabytes(totals.by_pool[def]));
     ::ImGui::Text("peak: %.1f MB", megabytes(totals.peak));
     ::ImGui::Text(
         "d3d creates: %llu (%llu failed)",
         static_cast<unsigned long long>(stats::d3d_creates.load(std::memory_order_relaxed)),
         static_cast<unsigned long long>(stats::d3d_create_failures.load(std::memory_order_relaxed)));
-    ::ImGui::Text("live textures: %zu", stats::live_textures.live_count());
+    ::ImGui::Text("live textures: %llu", static_cast<unsigned long long>(totals.live_count));
     ::ImGui::Text(
         "live vb/ib/state blocks: %zu / %zu / %zu",
         stats::live_vertex_buffers.live_count(),

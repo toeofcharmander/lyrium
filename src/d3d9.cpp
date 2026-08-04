@@ -23,18 +23,27 @@
 #include "lyrium/diag/process_info.h"
 #include "lyrium/diag/sampler.h"
 #include "lyrium/diag/texture_size.h"
-#include "lyrium/diag/texture_totals.h"
 #include "lyrium/diag/va_space.h"
 #include "lyrium/hooks/com_hook.h"
 #include "lyrium/log.h"
 #include "lyrium/resettable_texture.h"
 #include "lyrium/policy/texture_placement_policy.h"
+#include "lyrium/texture/dll_texture_ledger.h"
 #include "lyrium/resource_tracker.h"
 #include "lyrium/texture_recycler.h"
 #include "lyrium/utils.h"
 
 
 using lyrium::Event;
+
+namespace lyrium
+{
+auto texture_ledger() -> DllTextureLedger &
+{
+    static auto ledger = DllTextureLedger{};
+    return ledger;
+}
+}
 
 namespace
 {
@@ -57,9 +66,6 @@ auto config = lyrium::Config{};
 
 
 
-std::mutex texture_size_mutex;
-lyrium::UnorderedMap<void *, std::pair<std::uint64_t, std::uint32_t>> texture_sizes;
-
 // Built once from the loaded configuration. This is a stepping stone: the policy
 // is owned by a composition root in a later step, not reached through a global.
 auto placement_policy() -> const lyrium::policy::TexturePlacementPolicy &
@@ -72,57 +78,20 @@ auto placement_policy() -> const lyrium::policy::TexturePlacementPolicy &
     return policy;
 }
 
-auto pool_index(::D3DPOOL pool) -> std::size_t
-{
-    const auto value = static_cast<std::size_t>(pool);
-    return value < 4u ? value : 0u;
-}
-
 auto remember_texture(void *texture, std::uint64_t bytes, ::D3DPOOL pool) -> void
 {
-    if (texture == nullptr)
-    {
-        return;
-    }
-
-    {
-        auto lock = std::scoped_lock{texture_size_mutex};
-        texture_sizes[texture] = {bytes, static_cast<std::uint32_t>(pool)};
-    }
-
-    lyrium::stats::texture_bytes_by_pool[pool_index(pool)].fetch_add(bytes, std::memory_order_relaxed);
-    lyrium::stats::texture_bytes_live.fetch_add(bytes, std::memory_order_relaxed);
-    lyrium::diag::note_texture_created(static_cast<std::uint32_t>(pool), bytes);
+    lyrium::texture_ledger().note_created(
+        texture, static_cast<lyrium::texture::TexturePool>(pool), bytes);
 }
 
 auto forget_texture(void *texture) -> void
 {
-    auto bytes = std::uint64_t{};
-    auto pool = std::uint32_t{};
-
-    {
-        auto lock = std::scoped_lock{texture_size_mutex};
-        const auto found = texture_sizes.find(texture);
-        if (found == texture_sizes.end())
-        {
-            return;
-        }
-        bytes = found->second.first;
-        pool = found->second.second;
-        texture_sizes.erase(found);
-    }
-
-    lyrium::stats::texture_bytes_by_pool[pool_index(static_cast<::D3DPOOL>(pool))].fetch_sub(bytes, std::memory_order_relaxed);
-    lyrium::stats::texture_bytes_live.fetch_sub(bytes, std::memory_order_relaxed);
-    lyrium::diag::note_texture_released(pool, bytes);
+    (void)lyrium::texture_ledger().note_destroyed(texture);
 }
 
 auto forget_resettable_texture(::IDirect3DTexture9 *texture) -> void
 {
-    if (lyrium::stats::live_textures.untrack(texture))
-    {
-        forget_texture(texture);
-    }
+    forget_texture(texture);
 }
 
 auto note_create(::HRESULT hr, std::uint64_t bytes) -> void
@@ -442,8 +411,10 @@ __declspec(dllexport) ::ULONG WINAPI IDirect3DTexture9_Release_hook(::PROC orig_
 
         if (references == 1u && lyrium::TextureRecycler::instance().retain(texture))
         {
-
-            lyrium::stats::live_textures.untrack(that);
+            // Retained, not destroyed: the recycler owns it now and it still
+            // occupies address space, so it stays on the ledger. Re-acquiring it
+            // re-registers the same handle, which replaces the record rather
+            // than adding a second one.
             return 0u;
         }
     }
@@ -453,10 +424,7 @@ __declspec(dllexport) ::ULONG WINAPI IDirect3DTexture9_Release_hook(::PROC orig_
     if (res == 0)
     {
         lyrium::TextureRecycler::instance().forget(texture);
-        if (lyrium::stats::live_textures.untrack(that))
-        {
-            forget_texture(that);
-        }
+        forget_texture(that);
     }
 
     return res;
@@ -520,7 +488,6 @@ __declspec(dllexport) ::HRESULT WINAPI IDirect3DDevice9_CreateTexture_hook(
         if (auto *recycled = lyrium::TextureRecycler::instance().acquire(key); recycled != nullptr)
         {
             *ppTexture = recycled;
-            lyrium::stats::live_textures.track(recycled);
             remember_texture(recycled, bytes, pool);
             return S_OK;
         }
@@ -588,7 +555,6 @@ __declspec(dllexport) ::HRESULT WINAPI IDirect3DDevice9_CreateTexture_hook(
     auto *texture = (SUCCEEDED(res) && ppTexture != nullptr) ? *ppTexture : nullptr;
     if (texture != nullptr)
     {
-        lyrium::stats::live_textures.track(texture);
         remember_texture(texture, bytes, pool);
         if (pool_overridden)
         {
