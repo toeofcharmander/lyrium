@@ -81,7 +81,11 @@ inline constexpr Target targets[] = {
         .address = 0x00846b90,
         .size = 674,
         .patch_len = 6,
-        .reloc_mask = 0x1e00,
+        // The 6 patched bytes are push ebp / mov ebp,esp / and esp,-8, none of
+        // which carries an absolute operand, so nothing here is relocatable. The
+        // mask previously described the push imm32 at offsets 9..12, which sits
+        // outside the patch and could never be consulted.
+        .reloc_mask = 0x0000,
         .sha256 = "1af959dfb506c915f51c8ed32d16ba41114d73704158e215d3f1228c688b4a0b",
         .prologue = {0x55, 0x8B, 0xEC, 0x83, 0xE4, 0xF8, 0x6A, 0xFF, 0x68, 0xE1, 0x18, 0xAC, 0x00, 0x64, 0xA1, 0x00},
     },
