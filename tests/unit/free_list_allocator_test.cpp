@@ -1,5 +1,7 @@
 #include <cstddef>
 #include <new>
+#include <type_traits>
+#include <utility>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -45,6 +47,14 @@ auto node_count(Allocator &allocator) -> std::size_t
     return count;
 }
 
+// Regression: the allocator used to declare no copy or move operations, so the
+// implicitly generated copy constructor duplicated the raw page pointer and both
+// objects released the same page. Enforcing this at compile time is what keeps
+// the double free unreachable rather than merely untested.
+static_assert(!std::is_copy_constructible_v<Allocator>, "copying the allocator would release its page twice");
+static_assert(!std::is_copy_assignable_v<Allocator>, "copying the allocator would release its page twice");
+static_assert(std::is_nothrow_move_constructible_v<Allocator>);
+
 class FreeList : public ::testing::Test
 {
   protected:
@@ -54,6 +64,45 @@ class FreeList : public ::testing::Test
     Allocator allocator{TrackingPages{ledger}, capacity};
 };
 
+}
+
+TEST(FreeListOwnership, MoveTransfersThePageExactlyOnce)
+{
+    PageLedger ledger{};
+
+    {
+        Allocator original{TrackingPages{ledger}, 4096u};
+        Allocator moved{std::move(original)};
+        (void)moved;
+    }
+
+    EXPECT_EQ(ledger.allocations(), 1u);
+    EXPECT_EQ(ledger.releases(), 1u) << "a moved-from allocator must not release the page it gave away";
+}
+
+TEST(FreeListOwnership, MoveAssignmentReleasesBothPagesExactlyOnce)
+{
+    PageLedger ledger{};
+
+    {
+        Allocator first{TrackingPages{ledger}, 4096u};
+        Allocator second{TrackingPages{ledger}, 4096u};
+        second = std::move(first);
+    }
+
+    EXPECT_EQ(ledger.allocations(), 2u);
+    EXPECT_EQ(ledger.releases(), 2u) << "the target's own page must be released, and the moved-from one must not be";
+}
+
+TEST(FreeListOwnership, AMovedToAllocatorStillOwnsAUsableFreeList)
+{
+    PageLedger ledger{};
+    Allocator original{TrackingPages{ledger}, 4096u};
+    Allocator moved{std::move(original)};
+
+    auto *block = moved.allocate(64u);
+    ASSERT_NE(block, nullptr);
+    moved.deallocate(block);
 }
 
 TEST_F(FreeList, StartsAsOneNodeSpanningThePage)

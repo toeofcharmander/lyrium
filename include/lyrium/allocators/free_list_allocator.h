@@ -76,9 +76,42 @@ class FreeListAllocator
     {
     }
 
+    // The allocator owns its page exclusively. Copying it would duplicate the raw
+    // pointer and release the same page twice, so copying is not available and
+    // ownership transfers by move only.
+    FreeListAllocator(const FreeListAllocator &) = delete;
+    auto operator=(const FreeListAllocator &) -> FreeListAllocator & = delete;
+
+    FreeListAllocator(FreeListAllocator &&other) noexcept
+        : page_allocator_{std::move(other.page_allocator_)}
+        , page_{std::exchange(other.page_, nullptr)}
+        , head_{std::exchange(other.head_, nullptr)}
+    {
+    }
+
+    auto operator=(FreeListAllocator &&other) noexcept -> FreeListAllocator &
+    {
+        if (this != &other)
+        {
+            if (page_ != nullptr)
+            {
+                page_allocator_.deallocate(page_);
+            }
+
+            page_allocator_ = std::move(other.page_allocator_);
+            page_ = std::exchange(other.page_, nullptr);
+            head_ = std::exchange(other.head_, nullptr);
+        }
+
+        return *this;
+    }
+
     ~FreeListAllocator()
     {
-        page_allocator_.deallocate(page_);
+        if (page_ != nullptr)
+        {
+            page_allocator_.deallocate(page_);
+        }
     }
 
     auto allocate(std::size_t size) -> void *
