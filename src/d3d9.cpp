@@ -891,6 +891,28 @@ extern "C"
                 config.texture_pool.prefer_default,
                 config.recycler.enabled,
                 config.sample_interval_ms);
+            // Which address-space ceiling this process actually has. Without the
+            // LAA patch the game gets 2 GB; with it, up to 4 GB on 64-bit
+            // Windows. Every pressure threshold means something different
+            // between the two, and both are in the wild, so a session is not
+            // interpretable without knowing which one produced it.
+            const auto image = lyrium::diag::read_image_flags();
+            if (image.valid)
+            {
+                lyrium::log(
+                    "image: large_address_aware={} dynamic_base={} nx={} base={:#010x} delta={:#x} size={}",
+                    image.large_address_aware,
+                    image.dynamic_base,
+                    image.nx_compatible,
+                    static_cast<std::uint32_t>(image.actual_base),
+                    static_cast<std::uint32_t>(image.base_delta),
+                    image.size_of_image);
+            }
+            else
+            {
+                lyrium::log("image: header unreadable, address-space ceiling unknown");
+            }
+
             lyrium::log("allocation watch: {}", allocation_watch_mode);
             lyrium::log(
                 "main pool patch: {} (original={}, patched={})",
