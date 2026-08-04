@@ -1,4 +1,5 @@
 #include <cstdint>
+#include <type_traits>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -290,3 +291,12 @@ TEST(RescueCoordinator, BoundedEvictionReclaimsLessThanUnboundedForTheSamePressu
     EXPECT_GT(bounded.backend.pending, unbounded.backend.pending)
         << "the bounded run should leave far more of the cache intact";
 }
+
+// RescueCoordinator holds raw pointers to objects it does not own. That is only
+// safe because it is trivially destructible and so never runs at exit -- adding
+// one std::string member would register a destructor that reads those pointers
+// after the objects are gone. This fails here, on Linux, in seconds, rather than
+// as an unexplained shutdown crash in the game months later.
+static_assert(
+    std::is_trivially_destructible_v<lyrium::policy::RescueCoordinator>,
+    "RescueCoordinator must stay trivially destructible; see the composition in src/d3d9.cpp");

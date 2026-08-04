@@ -27,6 +27,7 @@
 #include "lyrium/hooks/com_hook.h"
 #include "lyrium/log.h"
 #include "lyrium/resettable_texture.h"
+#include "lyrium/never_destroyed.h"
 #include "lyrium/policy/rescue_coordinator.h"
 #include "lyrium/policy/texture_placement_policy.h"
 #include "lyrium/texture/dll_texture_ledger.h"
@@ -303,25 +304,42 @@ class SystemClock final : public lyrium::policy::Clock
     }
 };
 
-EngineEvictionBackend eviction_backend{};
-SamplerFreeSpaceProbe free_space_probe{};
-SystemClock system_clock{};
+// The coordinator points at these three, so they live in the same object and are
+// constructed before it. Previously they were namespace-scope while the
+// coordinator was a lazily-built function-local static, which happened to give
+// the right lifetime relation only because lazy construction meant the
+// coordinator was destroyed first. Nothing enforced it, and one non-trivial
+// member added to RescueCoordinator would have silently turned that into a
+// dangling read at exit.
+struct RescueParts
+{
+    EngineEvictionBackend backend{};
+    SamplerFreeSpaceProbe probe{};
+    SystemClock clock{};
+    lyrium::policy::RescueCoordinator coordinator;
+
+    explicit RescueParts(const lyrium::policy::RescueConfig &configuration)
+        : coordinator{configuration, backend, probe, clock}
+    {
+    }
+};
 
 // Built once from the loaded configuration, like the placement policy. Another
 // stepping stone until the composition root owns these.
+auto rescue_parts() -> RescueParts &
+{
+    static auto parts = lyrium::NeverDestroyed<RescueParts>{lyrium::policy::RescueConfig{
+        .preemptive = config.rescue.preemptive,
+        .on_failure = config.rescue.on_failure,
+        .evict_managed = config.rescue.evict_managed,
+        .unbounded = config.rescue.unbounded,
+    }};
+    return parts.get();
+}
+
 auto rescue_coordinator() -> lyrium::policy::RescueCoordinator &
 {
-    static auto coordinator = lyrium::policy::RescueCoordinator{
-        lyrium::policy::RescueConfig{
-            .preemptive = config.rescue.preemptive,
-            .on_failure = config.rescue.on_failure,
-            .evict_managed = config.rescue.evict_managed,
-            .unbounded = config.rescue.unbounded,
-        },
-        eviction_backend,
-        free_space_probe,
-        system_clock};
-    return coordinator;
+    return rescue_parts().coordinator;
 }
 
 }
@@ -1009,7 +1027,7 @@ __declspec(dllexport) ::HRESULT WINAPI IDirect3D9_CreateDevice_hook(
 
 
     // The backend needs the device to evict managed resources.
-    eviction_backend.set_device(device);
+    rescue_parts().backend.set_device(device);
 
     lyrium::breadcrumb("d3d CreateDevice: returned");
     return res;
