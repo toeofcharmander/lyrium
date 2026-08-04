@@ -17,10 +17,19 @@ target_include_directories(lyrium_test_base INTERFACE ${CMAKE_CURRENT_SOURCE_DIR
 # later assertion in the same binary, so each test target is its own executable.
 # KNOWN_DEFECT marks a test that pins a real bug and is expected to fail until
 # that bug is fixed; those are excluded from the green loop by the test preset.
+# Minimal <d3d9.h> providing only the D3DFORMAT and D3DPOOL enumerators. Given
+# only to targets that ask for it, so it can never silently shadow the real header
+# elsewhere. The Windows build checks its values against the genuine one.
+add_library(lyrium_d3d9_shim INTERFACE)
+target_include_directories(lyrium_d3d9_shim INTERFACE ${CMAKE_CURRENT_SOURCE_DIR}/shim)
+
 function(lyrium_add_test name)
-  cmake_parse_arguments(ARG "KNOWN_DEFECT" "" "SOURCES" ${ARGN})
+  cmake_parse_arguments(ARG "KNOWN_DEFECT;NEEDS_D3D9_SHIM" "" "SOURCES" ${ARGN})
   add_executable(${name} ${ARG_SOURCES})
   target_link_libraries(${name} PRIVATE lyrium_test_base)
+  if (ARG_NEEDS_D3D9_SHIM)
+    target_link_libraries(${name} PRIVATE lyrium_d3d9_shim)
+  endif()
   add_test(NAME ${name} COMMAND ${name})
   if (ARG_KNOWN_DEFECT)
     set_tests_properties(${name} PROPERTIES LABELS known_defect)
@@ -32,3 +41,4 @@ lyrium_add_test(sha256_test SOURCES unit/sha256_test.cpp)
 lyrium_add_test(page_allocator_test SOURCES unit/page_allocator_test.cpp)
 lyrium_add_test(free_list_allocator_test SOURCES unit/free_list_allocator_test.cpp)
 lyrium_add_test(targets_table_test SOURCES unit/targets_table_test.cpp)
+lyrium_add_test(texture_size_test NEEDS_D3D9_SHIM SOURCES unit/texture_size_test.cpp)

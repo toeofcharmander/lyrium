@@ -59,3 +59,15 @@ set_target_properties(d3d9 PROPERTIES PREFIX "")
 if (LYRIUM_STATIC_RUNTIME)
   target_link_options(d3d9 PRIVATE -static)
 endif()
+
+# Proves the enum values in tests/shim/d3d9_enum_list.inl match the genuine
+# <d3d9.h>. It is compiled here because this is the only configuration that has
+# the real header. Nothing links it -- the static_asserts are the whole product,
+# so a value that drifts breaks this build instead of silently making the Linux
+# texture-sizing tests measure the wrong thing.
+add_library(lyrium_d3d9_shim_conformance OBJECT
+  ${PROJECT_SOURCE_DIR}/tests/conformance/d3d9_shim_conformance.cpp
+)
+target_include_directories(lyrium_d3d9_shim_conformance PRIVATE ${PROJECT_SOURCE_DIR}/tests)
+target_compile_features(lyrium_d3d9_shim_conformance PRIVATE cxx_std_26)
+add_dependencies(d3d9 lyrium_d3d9_shim_conformance)
