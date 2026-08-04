@@ -27,6 +27,7 @@
 #include "lyrium/hooks/com_hook.h"
 #include "lyrium/log.h"
 #include "lyrium/resettable_texture.h"
+#include "lyrium/policy/rescue_coordinator.h"
 #include "lyrium/policy/texture_placement_policy.h"
 #include "lyrium/texture/dll_texture_ledger.h"
 #include "lyrium/resource_tracker.h"
@@ -138,6 +139,8 @@ auto main_pool_override_bytes() -> std::uint32_t
 lyrium::dao::PoolPatchResult pool_patch_result{};
 const char *allocation_watch_mode{"not attempted"};
 
+auto rescue_coordinator() -> lyrium::policy::RescueCoordinator &;
+
 // Attached to the sampler so every periodic address-space line is accompanied by
 // what lyrium believes it is holding. Without this the only way to read the
 // texture figures was to watch the overlay, which makes a session impossible to
@@ -163,6 +166,20 @@ auto log_ledger_snapshot(std::string_view reason, const lyrium::diag::VaStats &)
         lyrium::stats::d3d_create_failures.load(std::memory_order_relaxed),
         lyrium::stats::pool_overrides.load(std::memory_order_relaxed),
         lyrium::stats::pool_reverts.load(std::memory_order_relaxed));
+
+    const auto rescue = rescue_coordinator().stats();
+    lyrium::log(
+        "rescue[{}]: pressure={} preemptive={} on_failure={} evictions={} clears={} managed={} released={} "
+        "suppressed={}",
+        reason,
+        rescue.under_pressure,
+        rescue.preemptive,
+        rescue.on_failure,
+        rescue.evictions,
+        rescue.cache_clears,
+        rescue.managed_evictions,
+        rescue.released_total,
+        rescue.suppressed);
 }
 
 auto enable_allocation_watch() -> void
@@ -189,18 +206,91 @@ auto enable_allocation_watch() -> void
 
 
 
-thread_local auto in_rescue = false;
+// Windows adapters for the rescue seams. They hold no decisions: every choice
+// about whether and how hard to evict belongs to RescuePolicy, which is tested
+// without any of this.
 
-auto reclaim(void *device) -> int
+class EngineEvictionBackend final : public lyrium::policy::EvictionBackend
 {
-    const auto released = lyrium::dao::emergency_evict(INT_MAX);
-
-    if (config.rescue.evict_managed && device != nullptr)
+  public:
+    [[nodiscard]] auto cache_available() const -> bool override
     {
-        reinterpret_cast<::IDirect3DDevice9 *>(device)->EvictManagedResources();
+        return lyrium::dao::texture_cache_known();
     }
 
-    return released;
+    [[nodiscard]] auto pending_releases() const -> std::int32_t override
+    {
+        const auto state = lyrium::dao::engine_state();
+        return state.cache_readable ? state.pending_releases : 0;
+    }
+
+    [[nodiscard]] auto evict(std::int32_t max_count) -> std::int32_t override
+    {
+        return lyrium::dao::emergency_evict(max_count);
+    }
+
+    [[nodiscard]] auto clear_cache() -> bool override
+    {
+        return lyrium::dao::emergency_clear_texture_cache();
+    }
+
+    auto evict_managed_resources() -> void override
+    {
+        if (auto *device = device_.load(std::memory_order_relaxed); device != nullptr)
+        {
+            device->EvictManagedResources();
+        }
+    }
+
+    auto set_device(::IDirect3DDevice9 *device) -> void
+    {
+        device_.store(device, std::memory_order_relaxed);
+    }
+
+  private:
+    std::atomic<::IDirect3DDevice9 *> device_{nullptr};
+};
+
+// Deliberately the sampler's cached reading rather than a fresh walk. A full
+// address-space walk was measured at about 6.5 ms, which is 39 percent of a
+// frame at 60 fps, so it cannot happen on the create path.
+class SamplerFreeSpaceProbe final : public lyrium::policy::FreeSpaceProbe
+{
+  public:
+    [[nodiscard]] auto largest_free_bytes() const -> std::uint64_t override
+    {
+        return lyrium::diag::Sampler::instance().largest_free();
+    }
+};
+
+class SystemClock final : public lyrium::policy::Clock
+{
+  public:
+    [[nodiscard]] auto now_us() const -> std::int64_t override
+    {
+        return lyrium::now_us();
+    }
+};
+
+EngineEvictionBackend eviction_backend{};
+SamplerFreeSpaceProbe free_space_probe{};
+SystemClock system_clock{};
+
+// Built once from the loaded configuration, like the placement policy. Another
+// stepping stone until the composition root owns these.
+auto rescue_coordinator() -> lyrium::policy::RescueCoordinator &
+{
+    static auto coordinator = lyrium::policy::RescueCoordinator{
+        lyrium::policy::RescueConfig{
+            .preemptive = config.rescue.preemptive,
+            .on_failure = config.rescue.on_failure,
+            .evict_managed = config.rescue.evict_managed,
+            .unbounded = config.rescue.unbounded,
+        },
+        eviction_backend,
+        free_space_probe,
+        system_clock};
+    return coordinator;
 }
 
 }
@@ -474,17 +564,9 @@ __declspec(dllexport) ::HRESULT WINAPI IDirect3DDevice9_CreateTexture_hook(
     const auto original = reinterpret_cast<orig_call_type>(orig_func);
     const auto bytes = lyrium::diag::texture_bytes(Width, Height, 1u, Levels, Format);
 
-    if (config.rescue.preemptive && !in_rescue && bytes >= config.rescue.large_create_bytes &&
-        lyrium::dao::texture_cache_known())
+    if (rescue_coordinator().consider(bytes, 0u).acted)
     {
-        const auto largest = lyrium::diag::Sampler::instance().largest_free();
-        if (largest != 0u && largest < config.rescue.low_watermark_bytes)
-        {
-            in_rescue = true;
-            lyrium::stats::rescue_preemptive.fetch_add(1u, std::memory_order_relaxed);
-            reclaim(that);
-            in_rescue = false;
-        }
+        lyrium::stats::rescue_preemptive.fetch_add(1u, std::memory_order_relaxed);
     }
 
     const auto placement = placement_policy().place(
@@ -562,20 +644,29 @@ __declspec(dllexport) ::HRESULT WINAPI IDirect3DDevice9_CreateTexture_hook(
         lyrium::stats::pool_override_bytes.fetch_add(bytes, std::memory_order_relaxed);
     }
 
-    if (FAILED(res) && config.rescue.on_failure && !in_rescue && ppTexture != nullptr)
+    // Escalating retries. Each pass asks the coordinator for a stronger action
+    // than the last, terminating in a full cache clear, so bounding the
+    // preemptive path above cannot leave a real failure unanswered.
+    for (auto attempt = std::uint32_t{1}; FAILED(res) && ppTexture != nullptr && attempt <= 3u; ++attempt)
     {
-        in_rescue = true;
+        if (!rescue_coordinator().consider(bytes, attempt).acted)
+        {
+            break;
+        }
+
         lyrium::stats::rescue_attempts.fetch_add(1u, std::memory_order_relaxed);
 
-        reclaim(that);
-        const auto retry = original(that, Width, Height, Levels, Usage, Format, Pool, ppTexture, pSharedHandle);
+        // Retry with the pool actually in effect, not the originally requested
+        // one. They differ once placement has relocated the texture or the
+        // managed fallback has already fired, and using the wrong one recorded
+        // the result against the wrong pool.
+        const auto retry = original(that, Width, Height, Levels, Usage, Format, pool, ppTexture, pSharedHandle);
         if (SUCCEEDED(retry))
         {
             lyrium::stats::rescue_successes.fetch_add(1u, std::memory_order_relaxed);
         }
 
         res = retry;
-        in_rescue = false;
     }
 
     note_create(res, bytes);
@@ -841,6 +932,9 @@ __declspec(dllexport) ::HRESULT WINAPI IDirect3D9_CreateDevice_hook(
     auto caps = ::D3DCAPS9{};
     device->GetDeviceCaps(&caps);
 
+
+    // The backend needs the device to evict managed resources.
+    eviction_backend.set_device(device);
 
     lyrium::breadcrumb("d3d CreateDevice: returned");
     return res;

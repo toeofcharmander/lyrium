@@ -25,6 +25,11 @@ struct RescueConfig
     std::uint64_t large_create_bytes{1ull * 1024ull * 1024ull};
 
     bool evict_managed{true};
+
+    // Escape hatch: restores the old unbounded eviction from configuration,
+    // without a rebuild, for a release whose failure mode is a crash in a long
+    // save.
+    bool unbounded{false};
 };
 
 struct TexturePoolConfig
@@ -145,7 +150,8 @@ inline auto load_config() -> Config
 
     config.rescue.on_failure = parse_bool(lookup("rescue_on_failure"), true);
     config.rescue.preemptive = parse_bool(lookup("rescue_preemptive"), true);
-    config.rescue.evict_managed = parse_bool(lookup("rescue_evict_managed"), true);
+    config.rescue.evict_managed = parse_bool(lookup("rescue_evict_managed"), true);
+    config.rescue.unbounded = parse_bool(lookup("rescue_unbounded"), false);
     if (const auto value = lookup("rescue_low_watermark_mb"); !value.empty())
     {
         config.rescue.low_watermark_bytes = std::strtoull(value.c_str(), nullptr, 10) * 1024ull * 1024ull;
