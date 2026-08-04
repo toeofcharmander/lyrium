@@ -1,4 +1,4 @@
-#include "eluvian/overlay.h"
+#include "lyrium/overlay.h"
 
 #include <atomic>
 #include <cstdint>
@@ -8,17 +8,17 @@
 #include <backends/imgui_impl_win32.h>
 #include <imgui.h>
 
-#include "eluvian/allocators/imgui_allocator.h"
-#include "eluvian/containers/vector.h"
-#include "eluvian/dao/engine_hooks.h"
-#include "eluvian/diag/sampler.h"
-#include "eluvian/diag/texture_totals.h"
-#include "eluvian/stats.h"
-#include "eluvian/texture_stager.h"
+#include "lyrium/allocators/imgui_allocator.h"
+#include "lyrium/containers/vector.h"
+#include "lyrium/dao/engine_hooks.h"
+#include "lyrium/diag/sampler.h"
+#include "lyrium/diag/texture_totals.h"
+#include "lyrium/stats.h"
+#include "lyrium/texture_stager.h"
 
 LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
-namespace eluvian::overlay
+namespace lyrium::overlay
 {
 
 namespace
@@ -214,7 +214,7 @@ auto render(::IDirect3DDevice9 *device) -> void
 
     ::ImGui::DockSpaceOverViewport(0, ::ImGui::GetMainViewport(), ::ImGuiDockNodeFlags_PassthruCentralNode);
 
-    ::ImGui::Begin("eluvian");
+    ::ImGui::Begin("lyrium");
 
     if (::ImGui::CollapsingHeader("address space", ::ImGuiTreeNodeFlags_DefaultOpen))
     {

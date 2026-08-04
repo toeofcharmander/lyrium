@@ -13,28 +13,28 @@
 #include <psapi.h>
 
 
-#include "eluvian/config.h"
-#include "eluvian/overlay.h"
-#include "eluvian/stats.h"
-#include "eluvian/containers/unordered_map.h"
-#include "eluvian/dao/engine_hooks.h"
-#include "eluvian/dao/pool_patch.h"
-#include "eluvian/diag/alloc_watch.h"
-#include "eluvian/diag/process_info.h"
-#include "eluvian/diag/sampler.h"
-#include "eluvian/diag/texture_size.h"
-#include "eluvian/diag/texture_totals.h"
-#include "eluvian/diag/va_space.h"
-#include "eluvian/hooks/com_hook.h"
-#include "eluvian/log.h"
-#include "eluvian/resettable_texture.h"
-#include "eluvian/resource_tracker.h"
-#include "eluvian/texture_recycler.h"
-#include "eluvian/texture_stager.h"
-#include "eluvian/utils.h"
+#include "lyrium/config.h"
+#include "lyrium/overlay.h"
+#include "lyrium/stats.h"
+#include "lyrium/containers/unordered_map.h"
+#include "lyrium/dao/engine_hooks.h"
+#include "lyrium/dao/pool_patch.h"
+#include "lyrium/diag/alloc_watch.h"
+#include "lyrium/diag/process_info.h"
+#include "lyrium/diag/sampler.h"
+#include "lyrium/diag/texture_size.h"
+#include "lyrium/diag/texture_totals.h"
+#include "lyrium/diag/va_space.h"
+#include "lyrium/hooks/com_hook.h"
+#include "lyrium/log.h"
+#include "lyrium/resettable_texture.h"
+#include "lyrium/resource_tracker.h"
+#include "lyrium/texture_recycler.h"
+#include "lyrium/texture_stager.h"
+#include "lyrium/utils.h"
 
 
-using eluvian::Event;
+using lyrium::Event;
 
 namespace
 {
@@ -51,14 +51,14 @@ struct OrigFunc<R(WINAPI *)(Head, Tail...)>
 template <class F>
 using OrigFuncType = OrigFunc<F>::type;
 
-auto com_hook = eluvian::COMHook{};
+auto com_hook = lyrium::COMHook{};
 
-auto config = eluvian::Config{};
+auto config = lyrium::Config{};
 
 
 
 std::mutex texture_size_mutex;
-eluvian::UnorderedMap<void *, std::pair<std::uint64_t, std::uint32_t>> texture_sizes;
+lyrium::UnorderedMap<void *, std::pair<std::uint64_t, std::uint32_t>> texture_sizes;
 
 auto pool_index(::D3DPOOL pool) -> std::size_t
 {
@@ -78,9 +78,9 @@ auto remember_texture(void *texture, std::uint64_t bytes, ::D3DPOOL pool) -> voi
         texture_sizes[texture] = {bytes, static_cast<std::uint32_t>(pool)};
     }
 
-    eluvian::stats::texture_bytes_by_pool[pool_index(pool)].fetch_add(bytes, std::memory_order_relaxed);
-    eluvian::stats::texture_bytes_live.fetch_add(bytes, std::memory_order_relaxed);
-    eluvian::diag::note_texture_created(static_cast<std::uint32_t>(pool), bytes);
+    lyrium::stats::texture_bytes_by_pool[pool_index(pool)].fetch_add(bytes, std::memory_order_relaxed);
+    lyrium::stats::texture_bytes_live.fetch_add(bytes, std::memory_order_relaxed);
+    lyrium::diag::note_texture_created(static_cast<std::uint32_t>(pool), bytes);
 }
 
 auto forget_texture(void *texture) -> void
@@ -100,14 +100,14 @@ auto forget_texture(void *texture) -> void
         texture_sizes.erase(found);
     }
 
-    eluvian::stats::texture_bytes_by_pool[pool_index(static_cast<::D3DPOOL>(pool))].fetch_sub(bytes, std::memory_order_relaxed);
-    eluvian::stats::texture_bytes_live.fetch_sub(bytes, std::memory_order_relaxed);
-    eluvian::diag::note_texture_released(pool, bytes);
+    lyrium::stats::texture_bytes_by_pool[pool_index(static_cast<::D3DPOOL>(pool))].fetch_sub(bytes, std::memory_order_relaxed);
+    lyrium::stats::texture_bytes_live.fetch_sub(bytes, std::memory_order_relaxed);
+    lyrium::diag::note_texture_released(pool, bytes);
 }
 
 auto forget_resettable_texture(::IDirect3DTexture9 *texture) -> void
 {
-    if (eluvian::stats::live_textures.untrack(texture))
+    if (lyrium::stats::live_textures.untrack(texture))
     {
         forget_texture(texture);
     }
@@ -116,12 +116,12 @@ auto forget_resettable_texture(::IDirect3DTexture9 *texture) -> void
 auto note_create(::HRESULT hr, std::uint64_t bytes) -> void
 {
     const auto count =
-        eluvian::stats::d3d_creates.fetch_add(1u, std::memory_order_relaxed) + 1u;
-    eluvian::dao::note_d3d_create_result(static_cast<std::int32_t>(hr), bytes);
+        lyrium::stats::d3d_creates.fetch_add(1u, std::memory_order_relaxed) + 1u;
+    lyrium::dao::note_d3d_create_result(static_cast<std::int32_t>(hr), bytes);
 
     if (count <= 8u || count % 256u == 0u || FAILED(hr))
     {
-        eluvian::log(
+        lyrium::log(
             "d3d create #{}: hr={:#010x}, bytes={}",
             count,
             static_cast<std::uint32_t>(hr),
@@ -130,8 +130,8 @@ auto note_create(::HRESULT hr, std::uint64_t bytes) -> void
 
     if (FAILED(hr))
     {
-        eluvian::stats::d3d_create_failures.fetch_add(1u, std::memory_order_relaxed);
-        eluvian::diag::Sampler::instance().sample_now("create_failed");
+        lyrium::stats::d3d_create_failures.fetch_add(1u, std::memory_order_relaxed);
+        lyrium::diag::Sampler::instance().sample_now("create_failed");
     }
 }
 
@@ -144,9 +144,9 @@ auto main_pool_override_bytes() -> std::uint32_t
     }
     auto ini = std::string{path};
     const auto slash = ini.find_last_of("\\/");
-    ini = (slash == std::string::npos ? std::string{} : ini.substr(0, slash + 1)) + "eluvian.ini";
+    ini = (slash == std::string::npos ? std::string{} : ini.substr(0, slash + 1)) + "lyrium.ini";
 
-    const auto megabytes = ::GetPrivateProfileIntA("eluvian", "main_pool_mb", 0, ini.c_str());
+    const auto megabytes = ::GetPrivateProfileIntA("lyrium", "main_pool_mb", 0, ini.c_str());
     if (megabytes <= 0)
     {
         return 0u;
@@ -154,22 +154,22 @@ auto main_pool_override_bytes() -> std::uint32_t
     return static_cast<std::uint32_t>(megabytes) * 1024u * 1024u;
 }
 
-eluvian::dao::PoolPatchResult pool_patch_result{};
+lyrium::dao::PoolPatchResult pool_patch_result{};
 const char *allocation_watch_mode{"not attempted"};
 
 auto enable_allocation_watch() -> void
 {
     static constexpr auto threshold = 8ull * 1024ull * 1024ull;
 
-    if (eluvian::diag::install_nt_alloc_hook(threshold))
+    if (lyrium::diag::install_nt_alloc_hook(threshold))
     {
         allocation_watch_mode = "NtAllocateVirtualMemory";
     }
-    else if (eluvian::diag::install_virtual_alloc_hook(threshold))
+    else if (lyrium::diag::install_virtual_alloc_hook(threshold))
     {
         allocation_watch_mode = "VirtualAlloc";
     }
-    else if (eluvian::diag::install_alloc_watch(threshold))
+    else if (lyrium::diag::install_alloc_watch(threshold))
     {
         allocation_watch_mode = "main executable IAT";
     }
@@ -185,7 +185,7 @@ thread_local auto in_rescue = false;
 
 auto reclaim(void *device) -> int
 {
-    const auto released = eluvian::dao::emergency_evict(INT_MAX);
+    const auto released = lyrium::dao::emergency_evict(INT_MAX);
 
     if (config.rescue.evict_managed && device != nullptr)
     {
@@ -321,8 +321,8 @@ __declspec(dllexport) ::HRESULT WINAPI IDirect3DDevice9_EndScene_Hook(::PROC ori
 {
     using orig_call_type = OrigFuncType<decltype(&IDirect3DDevice9_EndScene_Hook)>;
 
-    eluvian::overlay::poll_hotkey();
-    eluvian::overlay::render(reinterpret_cast<::IDirect3DDevice9 *>(that));
+    lyrium::overlay::poll_hotkey();
+    lyrium::overlay::render(reinterpret_cast<::IDirect3DDevice9 *>(that));
 
     return reinterpret_cast<orig_call_type>(orig_func)(that);
 }
@@ -348,7 +348,7 @@ __declspec(dllexport) ::ULONG WINAPI IDirect3DVertexBuffer9_Release_hook(::PROC 
 
     if (res == 0)
     {
-        eluvian::stats::live_vertex_buffers.untrack(that);
+        lyrium::stats::live_vertex_buffers.untrack(that);
     }
 
     return res;
@@ -374,11 +374,11 @@ __declspec(dllexport) ::HRESULT WINAPI IDirect3DDevice9_CreateVertexBuffer_hook(
     if (buffer != nullptr)
     {
         com_hook.add_hook<2zu>(buffer, IDirect3DVertexBuffer9_Release_hook);
-        eluvian::stats::live_vertex_buffers.track(buffer);
+        lyrium::stats::live_vertex_buffers.track(buffer);
     }
     else if (FAILED(res))
     {
-        eluvian::diag::Sampler::instance().sample_now("vertex_buffer_failed");
+        lyrium::diag::Sampler::instance().sample_now("vertex_buffer_failed");
     }
 
     return res;
@@ -392,7 +392,7 @@ __declspec(dllexport) ::ULONG WINAPI IDirect3DIndexBuffer9_Release_hook(::PROC o
 
     if (res == 0)
     {
-        eluvian::stats::live_index_buffers.untrack(that);
+        lyrium::stats::live_index_buffers.untrack(that);
     }
 
     return res;
@@ -418,11 +418,11 @@ __declspec(dllexport) ::HRESULT WINAPI IDirect3DDevice9_CreateIndexBuffer_hook(
     if (buffer != nullptr)
     {
         com_hook.add_hook<2zu>(buffer, IDirect3DIndexBuffer9_Release_hook);
-        eluvian::stats::live_index_buffers.track(buffer);
+        lyrium::stats::live_index_buffers.track(buffer);
     }
     else if (FAILED(res))
     {
-        eluvian::diag::Sampler::instance().sample_now("index_buffer_failed");
+        lyrium::diag::Sampler::instance().sample_now("index_buffer_failed");
     }
 
     return res;
@@ -439,10 +439,10 @@ __declspec(dllexport) ::HRESULT WINAPI IDirect3DTexture9_LockRect_hook(
     using orig_call_type = OrigFuncType<decltype(&IDirect3DTexture9_LockRect_hook)>;
 
     auto *texture = reinterpret_cast<::IDirect3DTexture9 *>(that);
-    if (eluvian::TextureStager::instance().is_staged(texture))
+    if (lyrium::TextureStager::instance().is_staged(texture))
     {
         const auto hr =
-            eluvian::TextureStager::instance().lock_rect(texture, Level, pLockedRect, pRect, Flags);
+            lyrium::TextureStager::instance().lock_rect(texture, Level, pLockedRect, pRect, Flags);
         if (SUCCEEDED(hr))
         {
             return hr;
@@ -461,9 +461,9 @@ __declspec(dllexport) ::HRESULT WINAPI IDirect3DTexture9_UnlockRect_hook(
     using orig_call_type = OrigFuncType<decltype(&IDirect3DTexture9_UnlockRect_hook)>;
 
     auto *texture = reinterpret_cast<::IDirect3DTexture9 *>(that);
-    if (eluvian::TextureStager::instance().is_staged(texture))
+    if (lyrium::TextureStager::instance().is_staged(texture))
     {
-        return eluvian::TextureStager::instance().unlock_rect(texture, Level);
+        return lyrium::TextureStager::instance().unlock_rect(texture, Level);
     }
 
     return reinterpret_cast<orig_call_type>(orig_func)(that, Level);
@@ -475,15 +475,15 @@ __declspec(dllexport) ::ULONG WINAPI IDirect3DTexture9_Release_hook(::PROC orig_
 
     auto *texture = reinterpret_cast<::IDirect3DTexture9 *>(that);
 
-    if (eluvian::TextureRecycler::instance().enabled())
+    if (lyrium::TextureRecycler::instance().enabled())
     {
         texture->AddRef();
         const auto references = reinterpret_cast<orig_call_type>(orig_func)(that);
 
-        if (references == 1u && eluvian::TextureRecycler::instance().retain(texture))
+        if (references == 1u && lyrium::TextureRecycler::instance().retain(texture))
         {
 
-            eluvian::stats::live_textures.untrack(that);
+            lyrium::stats::live_textures.untrack(that);
             return 0u;
         }
     }
@@ -492,9 +492,9 @@ __declspec(dllexport) ::ULONG WINAPI IDirect3DTexture9_Release_hook(::PROC orig_
 
     if (res == 0)
     {
-        eluvian::TextureRecycler::instance().forget(texture);
-        eluvian::TextureStager::instance().forget(texture);
-        if (eluvian::stats::live_textures.untrack(that))
+        lyrium::TextureRecycler::instance().forget(texture);
+        lyrium::TextureStager::instance().forget(texture);
+        if (lyrium::stats::live_textures.untrack(that))
         {
             forget_texture(that);
         }
@@ -518,16 +518,16 @@ __declspec(dllexport) ::HRESULT WINAPI IDirect3DDevice9_CreateTexture_hook(
     using orig_call_type = OrigFuncType<decltype(&IDirect3DDevice9_CreateTexture_hook)>;
 
     const auto original = reinterpret_cast<orig_call_type>(orig_func);
-    const auto bytes = eluvian::diag::texture_bytes(Width, Height, 1u, Levels, Format);
+    const auto bytes = lyrium::diag::texture_bytes(Width, Height, 1u, Levels, Format);
 
     if (config.rescue.preemptive && !in_rescue && bytes >= config.rescue.large_create_bytes &&
-        eluvian::dao::texture_cache_known())
+        lyrium::dao::texture_cache_known())
     {
-        const auto largest = eluvian::diag::Sampler::instance().largest_free();
+        const auto largest = lyrium::diag::Sampler::instance().largest_free();
         if (largest != 0u && largest < config.rescue.low_watermark_bytes)
         {
             in_rescue = true;
-            eluvian::stats::rescue_preemptive.fetch_add(1u, std::memory_order_relaxed);
+            lyrium::stats::rescue_preemptive.fetch_add(1u, std::memory_order_relaxed);
             reclaim(that);
             in_rescue = false;
         }
@@ -536,7 +536,7 @@ __declspec(dllexport) ::HRESULT WINAPI IDirect3DDevice9_CreateTexture_hook(
     auto pool = Pool;
     auto pool_overridden = false;
     if (config.texture_pool.prefer_default && Pool == D3DPOOL_MANAGED &&
-        eluvian::diag::is_block_compressed(Format) &&
+        lyrium::diag::is_block_compressed(Format) &&
         bytes >= config.texture_pool.minimum_bytes &&
         (Usage &
          (D3DUSAGE_RENDERTARGET | D3DUSAGE_DEPTHSTENCIL | D3DUSAGE_DYNAMIC |
@@ -546,7 +546,7 @@ __declspec(dllexport) ::HRESULT WINAPI IDirect3DDevice9_CreateTexture_hook(
         pool_overridden = true;
     }
 
-    const auto key = eluvian::TextureRecycler::Key{
+    const auto key = lyrium::TextureRecycler::Key{
         .width = Width,
         .height = Height,
         .levels = Levels,
@@ -556,10 +556,10 @@ __declspec(dllexport) ::HRESULT WINAPI IDirect3DDevice9_CreateTexture_hook(
 
     if (!pool_overridden && ppTexture != nullptr)
     {
-        if (auto *recycled = eluvian::TextureRecycler::instance().acquire(key); recycled != nullptr)
+        if (auto *recycled = lyrium::TextureRecycler::instance().acquire(key); recycled != nullptr)
         {
             *ppTexture = recycled;
-            eluvian::stats::live_textures.track(recycled);
+            lyrium::stats::live_textures.track(recycled);
             remember_texture(recycled, bytes, pool);
             return S_OK;
         }
@@ -569,11 +569,11 @@ __declspec(dllexport) ::HRESULT WINAPI IDirect3DDevice9_CreateTexture_hook(
     if (pool_overridden && SUCCEEDED(res) && ppTexture != nullptr && *ppTexture != nullptr)
     {
         auto *created = *ppTexture;
-        auto *wrapped = eluvian::make_resettable_texture(
+        auto *wrapped = lyrium::make_resettable_texture(
             reinterpret_cast<::IDirect3DDevice9 *>(that),
             original,
             created,
-            eluvian::ResettableTextureShape{
+            lyrium::ResettableTextureShape{
                 .width = Width,
                 .height = Height,
                 .levels = Levels,
@@ -597,26 +597,26 @@ __declspec(dllexport) ::HRESULT WINAPI IDirect3DDevice9_CreateTexture_hook(
     {
         res = original(that, Width, Height, Levels, Usage, Format, D3DPOOL_MANAGED, ppTexture, pSharedHandle);
         pool = D3DPOOL_MANAGED;
-        eluvian::stats::pool_reverts.fetch_add(1u, std::memory_order_relaxed);
+        lyrium::stats::pool_reverts.fetch_add(1u, std::memory_order_relaxed);
         pool_overridden = false;
     }
 
     if (pool_overridden)
     {
-        eluvian::stats::pool_overrides.fetch_add(1u, std::memory_order_relaxed);
-        eluvian::stats::pool_override_bytes.fetch_add(bytes, std::memory_order_relaxed);
+        lyrium::stats::pool_overrides.fetch_add(1u, std::memory_order_relaxed);
+        lyrium::stats::pool_override_bytes.fetch_add(bytes, std::memory_order_relaxed);
     }
 
     if (FAILED(res) && config.rescue.on_failure && !in_rescue && ppTexture != nullptr)
     {
         in_rescue = true;
-        eluvian::stats::rescue_attempts.fetch_add(1u, std::memory_order_relaxed);
+        lyrium::stats::rescue_attempts.fetch_add(1u, std::memory_order_relaxed);
 
         reclaim(that);
         const auto retry = original(that, Width, Height, Levels, Usage, Format, Pool, ppTexture, pSharedHandle);
         if (SUCCEEDED(retry))
         {
-            eluvian::stats::rescue_successes.fetch_add(1u, std::memory_order_relaxed);
+            lyrium::stats::rescue_successes.fetch_add(1u, std::memory_order_relaxed);
         }
 
         res = retry;
@@ -627,14 +627,14 @@ __declspec(dllexport) ::HRESULT WINAPI IDirect3DDevice9_CreateTexture_hook(
     auto *texture = (SUCCEEDED(res) && ppTexture != nullptr) ? *ppTexture : nullptr;
     if (texture != nullptr)
     {
-        eluvian::stats::live_textures.track(texture);
+        lyrium::stats::live_textures.track(texture);
         remember_texture(texture, bytes, pool);
         if (pool_overridden)
         {
             return res;
         }
 
-        eluvian::TextureRecycler::instance().note_created(texture, key, bytes);
+        lyrium::TextureRecycler::instance().note_created(texture, key, bytes);
         com_hook.add_hook<2zu>(texture, IDirect3DTexture9_Release_hook);
     }
 
@@ -652,7 +652,7 @@ __declspec(dllexport) ::HRESULT WINAPI IDirect3DDevice9_GetTexture_hook(
     const auto result = reinterpret_cast<orig_call_type>(orig_func)(that, Stage, ppTexture);
     if (SUCCEEDED(result) && ppTexture != nullptr && *ppTexture != nullptr)
     {
-        *ppTexture = eluvian::rewrap_resettable_texture(*ppTexture);
+        *ppTexture = lyrium::rewrap_resettable_texture(*ppTexture);
     }
     return result;
 }
@@ -665,7 +665,7 @@ __declspec(dllexport) ::HRESULT WINAPI IDirect3DDevice9_SetTexture_hook(
 {
     using orig_call_type = OrigFuncType<decltype(&IDirect3DDevice9_SetTexture_hook)>;
 
-    auto *texture = eluvian::unwrap_resettable_texture(pTexture);
+    auto *texture = lyrium::unwrap_resettable_texture(pTexture);
     if (pTexture != nullptr && texture == nullptr)
     {
         return D3DERR_DEVICELOST;
@@ -681,8 +681,8 @@ __declspec(dllexport) ::HRESULT WINAPI IDirect3DDevice9_UpdateTexture_hook(
 {
     using orig_call_type = OrigFuncType<decltype(&IDirect3DDevice9_UpdateTexture_hook)>;
 
-    auto *source = eluvian::unwrap_resettable_texture(pSourceTexture);
-    auto *destination = eluvian::unwrap_resettable_texture(pDestinationTexture);
+    auto *source = lyrium::unwrap_resettable_texture(pSourceTexture);
+    auto *destination = lyrium::unwrap_resettable_texture(pDestinationTexture);
     if ((pSourceTexture != nullptr && source == nullptr) ||
         (pDestinationTexture != nullptr && destination == nullptr))
     {
@@ -706,7 +706,7 @@ __declspec(dllexport) ::HRESULT WINAPI IDirect3DDevice9_CreateCubeTexture_hook(
 
     const auto res = reinterpret_cast<orig_call_type>(
         orig_func)(that, EdgeLength, Levels, Usage, Format, Pool, ppCubeTexture, pSharedHandle);
-    const auto bytes = eluvian::diag::texture_bytes(EdgeLength, EdgeLength, 1u, Levels, Format, 6u);
+    const auto bytes = lyrium::diag::texture_bytes(EdgeLength, EdgeLength, 1u, Levels, Format, 6u);
     note_create(res, bytes);
     auto *texture = (SUCCEEDED(res) && ppCubeTexture != nullptr) ? *ppCubeTexture : nullptr;
     if (texture != nullptr)
@@ -734,7 +734,7 @@ __declspec(dllexport) ::HRESULT WINAPI IDirect3DDevice9_CreateVolumeTexture_hook
 
     const auto res = reinterpret_cast<orig_call_type>(
         orig_func)(that, Width, Height, Depth, Levels, Usage, Format, Pool, ppVolumeTexture, pSharedHandle);
-    const auto bytes = eluvian::diag::texture_bytes(Width, Height, Depth, Levels, Format);
+    const auto bytes = lyrium::diag::texture_bytes(Width, Height, Depth, Levels, Format);
     note_create(res, bytes);
     auto *texture = (SUCCEEDED(res) && ppVolumeTexture != nullptr) ? *ppVolumeTexture : nullptr;
     if (texture != nullptr)
@@ -761,7 +761,7 @@ __declspec(dllexport) ::HRESULT WINAPI IDirect3DDevice9_CreateRenderTarget_hook(
 
     const auto res = reinterpret_cast<orig_call_type>(orig_func)(
         that, Width, Height, Format, MultiSample, MultisampleQuality, Lockable, ppSurface, pSharedHandle);
-    note_create(res, eluvian::diag::texture_bytes(Width, Height, 1u, 1u, Format));
+    note_create(res, lyrium::diag::texture_bytes(Width, Height, 1u, 1u, Format));
     return res;
 }
 
@@ -772,25 +772,25 @@ __declspec(dllexport) ::HRESULT WINAPI IDirect3DDevice9_Reset_hook(
 {
     using orig_call_type = OrigFuncType<decltype(&IDirect3DDevice9_Reset_hook)>;
 
-    eluvian::overlay::before_device_reset();
-    eluvian::before_resettable_texture_reset(reinterpret_cast<::IDirect3DDevice9 *>(that));
+    lyrium::overlay::before_device_reset();
+    lyrium::before_resettable_texture_reset(reinterpret_cast<::IDirect3DDevice9 *>(that));
 
-    const auto purged = eluvian::TextureRecycler::instance().purge();
+    const auto purged = lyrium::TextureRecycler::instance().purge();
     if (purged > 0u)
     {
     }
 
-    eluvian::diag::Sampler::instance().sample_now("before_reset");
+    lyrium::diag::Sampler::instance().sample_now("before_reset");
 
     const auto res = reinterpret_cast<orig_call_type>(orig_func)(that, pPresentationParameters);
-    eluvian::after_resettable_texture_reset();
+    lyrium::after_resettable_texture_reset();
 
     if (SUCCEEDED(res))
     {
-        eluvian::overlay::after_device_reset();
+        lyrium::overlay::after_device_reset();
     }
 
-    eluvian::diag::Sampler::instance().sample_now("after_reset");
+    lyrium::diag::Sampler::instance().sample_now("after_reset");
 
     return res;
 }
@@ -811,7 +811,7 @@ __declspec(dllexport) ::HRESULT WINAPI IDirect3DStateBlock9_Release_hook(::PROC 
 
     if (res == 0)
     {
-        eluvian::stats::live_state_blocks.untrack(that);
+        lyrium::stats::live_state_blocks.untrack(that);
     }
 
     return res;
@@ -830,7 +830,7 @@ __declspec(dllexport) ::HRESULT WINAPI IDirect3DDevice9_CreateStateBlock_hook(
     if (SUCCEEDED(res) && ppSB != nullptr && *ppSB != nullptr)
     {
         com_hook.add_hook<2zu>(*ppSB, IDirect3DStateBlock9_Release_hook);
-        eluvian::stats::live_state_blocks.track(*ppSB);
+        lyrium::stats::live_state_blocks.track(*ppSB);
     }
 
     return res;
@@ -848,21 +848,21 @@ __declspec(dllexport) ::HRESULT WINAPI IDirect3D9_CreateDevice_hook(
 {
     using orig_call_type = OrigFuncType<decltype(&IDirect3D9_CreateDevice_hook)>;
 
-    eluvian::breadcrumb("d3d CreateDevice: enter");
+    lyrium::breadcrumb("d3d CreateDevice: enter");
     const auto res = reinterpret_cast<orig_call_type>(orig_func)(
         that, Adapter, DeviceType, hFocusWindow, BehaviorFlags, pPresentationParameters, ppReturnedDeviceInterface);
-    eluvian::log(
+    lyrium::log(
         "d3d CreateDevice returned hr={:#010x}, output={}",
         static_cast<std::uint32_t>(res),
         ppReturnedDeviceInterface != nullptr ? static_cast<void *>(*ppReturnedDeviceInterface) : nullptr);
 
     if (FAILED(res) || ppReturnedDeviceInterface == nullptr || *ppReturnedDeviceInterface == nullptr)
     {
-        eluvian::breadcrumb("d3d CreateDevice: failed");
+        lyrium::breadcrumb("d3d CreateDevice: failed");
         return res;
     }
 
-    eluvian::breadcrumb("d3d CreateDevice: installing COM hooks");
+    lyrium::breadcrumb("d3d CreateDevice: installing COM hooks");
     auto *device = *ppReturnedDeviceInterface;
 
     com_hook.add_hook<5zu>(device, IDirect3DDevice9_EvictManagedResources_hook);
@@ -887,9 +887,9 @@ __declspec(dllexport) ::HRESULT WINAPI IDirect3D9_CreateDevice_hook(
     auto caps = ::D3DCAPS9{};
     device->GetDeviceCaps(&caps);
 
-    eluvian::TextureStager::instance().configure(config.texture_pool.prefer_default, device);
+    lyrium::TextureStager::instance().configure(config.texture_pool.prefer_default, device);
 
-    eluvian::breadcrumb("d3d CreateDevice: returned");
+    lyrium::breadcrumb("d3d CreateDevice: returned");
     return res;
 }
 
@@ -905,7 +905,7 @@ extern "C"
     {
         initialised = true;
 
-        config = eluvian::load_config();
+        config = lyrium::load_config();
 
         if (config.allocation_watch)
         {
@@ -916,18 +916,18 @@ extern "C"
             allocation_watch_mode = "disabled";
         }
 
-        eluvian::log_set_enabled(config.logging);
+        lyrium::log_set_enabled(config.logging);
 
         if (config.logging)
         {
-            eluvian::log_start(
+            lyrium::log_start(
                 config.log_directory,
-                "eluvian_" + eluvian::wall_clock("%Y%m%d_%H%M%S") + "_" +
+                "lyrium_" + lyrium::wall_clock("%Y%m%d_%H%M%S") + "_" +
                     std::to_string(::GetCurrentProcessId()));
-            eluvian::breadcrumb_reset(config.log_directory);
-            eluvian::breadcrumb("Direct3DCreate9: logging started");
-            eluvian::log("eluvian diagnostic startup, pid={}", ::GetCurrentProcessId());
-            eluvian::log(
+            lyrium::breadcrumb_reset(config.log_directory);
+            lyrium::breadcrumb("Direct3DCreate9: logging started");
+            lyrium::log("lyrium diagnostic startup, pid={}", ::GetCurrentProcessId());
+            lyrium::log(
                 "config: engine_hooks={}, cache_hooks={}, allocator_hooks={}, allocation_watch={}, overlay={}, "
                 "texture_pool_default={}, recycler={}, sample_interval_ms={}",
                 config.engine.hook_texture_paths,
@@ -938,48 +938,48 @@ extern "C"
                 config.texture_pool.prefer_default,
                 config.recycler.enabled,
                 config.sample_interval_ms);
-            eluvian::log("allocation watch: {}", allocation_watch_mode);
-            eluvian::log(
+            lyrium::log("allocation watch: {}", allocation_watch_mode);
+            lyrium::log(
                 "main pool patch: {} (original={}, patched={})",
                 pool_patch_result.reason != nullptr ? pool_patch_result.reason : "unknown",
                 pool_patch_result.original_bytes,
                 pool_patch_result.patched_bytes);
         }
 
-        eluvian::overlay::set_visible(config.overlay);
+        lyrium::overlay::set_visible(config.overlay);
 
-        eluvian::TextureRecycler::instance().configure(
+        lyrium::TextureRecycler::instance().configure(
             config.recycler.enabled, config.recycler.budget_bytes, config.recycler.max_per_key);
 
-        eluvian::breadcrumb("Direct3DCreate9: installing engine hooks");
-        eluvian::dao::install_engine_hooks(config.engine);
-        eluvian::breadcrumb("Direct3DCreate9: engine hooks installed");
+        lyrium::breadcrumb("Direct3DCreate9: installing engine hooks");
+        lyrium::dao::install_engine_hooks(config.engine);
+        lyrium::breadcrumb("Direct3DCreate9: engine hooks installed");
 
-        eluvian::diag::Sampler::instance().start(config.sample_interval_ms);
-        eluvian::breadcrumb("Direct3DCreate9: sampler started");
+        lyrium::diag::Sampler::instance().start(config.sample_interval_ms);
+        lyrium::breadcrumb("Direct3DCreate9: sampler started");
 
     }
 
-    eluvian::breadcrumb("Direct3DCreate9: loading system d3d9");
+    lyrium::breadcrumb("Direct3DCreate9: loading system d3d9");
     char system_path[MAX_PATH]{};
     ::GetSystemDirectoryA(system_path, MAX_PATH);
     const auto d3d9_path = std::string{system_path} + "\\d3d9.dll";
 
     const auto d3d9_lib = ::LoadLibraryA(d3d9_path.c_str());
-    eluvian::ensure(d3d9_lib != nullptr, "could not load {}", d3d9_path);
-    eluvian::breadcrumb("Direct3DCreate9: system d3d9 loaded");
+    lyrium::ensure(d3d9_lib != nullptr, "could not load {}", d3d9_path);
+    lyrium::breadcrumb("Direct3DCreate9: system d3d9 loaded");
 
     const auto direct_create =
         reinterpret_cast<decltype(&Direct3DCreate9)>(::GetProcAddress(d3d9_lib, "Direct3DCreate9"));
-    eluvian::ensure(direct_create != NULL, "failed to get address of Direct3DCreate9");
+    lyrium::ensure(direct_create != NULL, "failed to get address of Direct3DCreate9");
 
     auto *d3d9 = direct_create(SDKVersion);
-    eluvian::log("system Direct3DCreate9 returned {}", static_cast<void *>(d3d9));
+    lyrium::log("system Direct3DCreate9 returned {}", static_cast<void *>(d3d9));
 
     if (d3d9 != nullptr)
     {
         com_hook.add_hook<16zu>(d3d9, IDirect3D9_CreateDevice_hook);
-        eluvian::breadcrumb("Direct3DCreate9: proxy hook installed");
+        lyrium::breadcrumb("Direct3DCreate9: proxy hook installed");
     }
 
     return d3d9;
@@ -997,12 +997,12 @@ extern "C"
                 break;
             }
 
-            eluvian::dao::remove_engine_hooks();
+            lyrium::dao::remove_engine_hooks();
             break;
         }
         case DLL_PROCESS_ATTACH:
         {
-            pool_patch_result = eluvian::dao::patch_main_pool(main_pool_override_bytes());
+            pool_patch_result = lyrium::dao::patch_main_pool(main_pool_override_bytes());
             break;
         }
         case DLL_THREAD_ATTACH:

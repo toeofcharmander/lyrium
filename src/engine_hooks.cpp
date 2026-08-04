@@ -1,4 +1,4 @@
-﻿#include "eluvian/dao/engine_hooks.h"
+﻿#include "lyrium/dao/engine_hooks.h"
 
 #include <atomic>
 #include <cstddef>
@@ -9,47 +9,47 @@
 
 #include <windows.h>
 
-#include "eluvian/containers/unordered_map.h"
-#include "eluvian/dao/inline_hook.h"
-#include "eluvian/dao/targets.h"
-#include "eluvian/log.h"
-#include "eluvian/utils.h"
+#include "lyrium/containers/unordered_map.h"
+#include "lyrium/dao/inline_hook.h"
+#include "lyrium/dao/targets.h"
+#include "lyrium/log.h"
+#include "lyrium/utils.h"
 
-namespace eluvian::dao
+namespace lyrium::dao
 {
 
 namespace
 {
 
-#define ELUVIAN_THISCALL __attribute__((fastcall))
-#define ELUVIAN_STDCALL __attribute__((stdcall))
-#define ELUVIAN_CDECL __attribute__((cdecl))
+#define LYRIUM_THISCALL __attribute__((fastcall))
+#define LYRIUM_STDCALL __attribute__((stdcall))
+#define LYRIUM_CDECL __attribute__((cdecl))
 
-using LoadTextureFileFn = void *(ELUVIAN_THISCALL *)(void *, void *, void *, const void *, int);
+using LoadTextureFileFn = void *(LYRIUM_THISCALL *)(void *, void *, void *, const void *, int);
 
-using CreateTextureCachedFn = void *(ELUVIAN_THISCALL *)(void *, void *, void *, const void *, int, int, int, int, int);
+using CreateTextureCachedFn = void *(LYRIUM_THISCALL *)(void *, void *, void *, const void *, int, int, int, int, int);
 
 using CreateTextureRegisteredFn =
-    void *(ELUVIAN_THISCALL *)(void *, void *, void *, const void *, int, int, int, int, int, int, int);
+    void *(LYRIUM_THISCALL *)(void *, void *, void *, const void *, int, int, int, int, int, int, int);
 
-using StreamLoadFn = void *(ELUVIAN_THISCALL *)(void *, void *, void *, void *, int, int, int);
+using StreamLoadFn = void *(LYRIUM_THISCALL *)(void *, void *, void *, void *, int, int, int);
 
-using DecodeTextureMemoryFn = void *(ELUVIAN_STDCALL *)(void *, const void *, unsigned int, void *, int);
+using DecodeTextureMemoryFn = void *(LYRIUM_STDCALL *)(void *, const void *, unsigned int, void *, int);
 
-using CreateTexture2DFn = void *(ELUVIAN_THISCALL *)(void *, void *, unsigned, unsigned, unsigned, unsigned, int, int);
+using CreateTexture2DFn = void *(LYRIUM_THISCALL *)(void *, void *, unsigned, unsigned, unsigned, unsigned, int, int);
 
-using CreateTextureFromMemoryFn = void *(ELUVIAN_THISCALL *)(void *, void *, const void *, unsigned int);
+using CreateTextureFromMemoryFn = void *(LYRIUM_THISCALL *)(void *, void *, const void *, unsigned int);
 
 using CreateVolumeFromMemoryFn =
-    void *(ELUVIAN_THISCALL *)(void *, void *, const void *, unsigned int, int, int, int, int, int, int);
+    void *(LYRIUM_THISCALL *)(void *, void *, const void *, unsigned int, int, int, int, int, int, int);
 
-using EvictFn = void(ELUVIAN_THISCALL *)(void *, void *, int);
+using EvictFn = void(LYRIUM_THISCALL *)(void *, void *, int);
 
-using ClearFn = void(ELUVIAN_THISCALL *)(void *, void *);
+using ClearFn = void(LYRIUM_THISCALL *)(void *, void *);
 
-using MallocFn = void *(ELUVIAN_CDECL *)(std::size_t);
-using FreeFn = void(ELUVIAN_CDECL *)(void *);
-using ReallocFn = void *(ELUVIAN_CDECL *)(void *, std::size_t);
+using MallocFn = void *(LYRIUM_CDECL *)(std::size_t);
+using FreeFn = void(LYRIUM_CDECL *)(void *);
+using ReallocFn = void *(LYRIUM_CDECL *)(void *, std::size_t);
 
 auto config = EngineConfig{};
 
@@ -188,7 +188,7 @@ auto cache_snapshot(const void *cache, std::int32_t &memory, std::int32_t &pendi
            read_cache_int(cache, cache_pending_offset, pending);
 }
 
-ELUVIAN_THISCALL auto load_texture_file_detour(
+LYRIUM_THISCALL auto load_texture_file_detour(
     void *self,
     void *edx,
     void *ret_buf,
@@ -207,7 +207,7 @@ ELUVIAN_THISCALL auto load_texture_file_detour(
     return result;
 }
 
-ELUVIAN_THISCALL auto create_texture_cached_detour(
+LYRIUM_THISCALL auto create_texture_cached_detour(
     void *self,
     void *edx,
     void *ret_buf,
@@ -228,7 +228,7 @@ ELUVIAN_THISCALL auto create_texture_cached_detour(
     return result;
 }
 
-ELUVIAN_THISCALL auto create_texture_registered_detour(
+LYRIUM_THISCALL auto create_texture_registered_detour(
     void *self,
     void *edx,
     void *ret_buf,
@@ -253,7 +253,7 @@ ELUVIAN_THISCALL auto create_texture_registered_detour(
     return result;
 }
 
-ELUVIAN_THISCALL auto stream_load_detour(
+LYRIUM_THISCALL auto stream_load_detour(
     void *self,
     void *edx,
     void *ret_buf,
@@ -272,7 +272,7 @@ ELUVIAN_THISCALL auto stream_load_detour(
     return result;
 }
 
-ELUVIAN_STDCALL auto decode_texture_memory_detour(
+LYRIUM_STDCALL auto decode_texture_memory_detour(
     void *ret_buf,
     const void *source,
     unsigned int size,
@@ -291,7 +291,7 @@ ELUVIAN_STDCALL auto decode_texture_memory_detour(
     return result;
 }
 
-ELUVIAN_THISCALL auto create_texture_2d_detour(
+LYRIUM_THISCALL auto create_texture_2d_detour(
     void *self,
     void *edx,
     unsigned width,
@@ -326,7 +326,7 @@ ELUVIAN_THISCALL auto create_texture_2d_detour(
     return result;
 }
 
-ELUVIAN_THISCALL auto create_texture_from_memory_detour(
+LYRIUM_THISCALL auto create_texture_from_memory_detour(
     void *self,
     void *edx,
     const void *source,
@@ -344,7 +344,7 @@ ELUVIAN_THISCALL auto create_texture_from_memory_detour(
     return result;
 }
 
-ELUVIAN_THISCALL auto create_volume_from_memory_detour(
+LYRIUM_THISCALL auto create_volume_from_memory_detour(
     void *self,
     void *edx,
     const void *source,
@@ -368,7 +368,7 @@ ELUVIAN_THISCALL auto create_volume_from_memory_detour(
     return result;
 }
 
-ELUVIAN_THISCALL auto evict_detour(void *self, void *edx, int max_count) -> void
+LYRIUM_THISCALL auto evict_detour(void *self, void *edx, int max_count) -> void
 {
     const auto trace =
         FirstCallTrace{1u << 8u, "engine texture_cache_evict: enter", "engine texture_cache_evict: returned"};
@@ -396,7 +396,7 @@ ELUVIAN_THISCALL auto evict_detour(void *self, void *edx, int max_count) -> void
 
 }
 
-ELUVIAN_THISCALL auto clear_detour(void *self, void *edx) -> void
+LYRIUM_THISCALL auto clear_detour(void *self, void *edx) -> void
 {
     const auto trace =
         FirstCallTrace{1u << 9u, "engine texture_cache_clear: enter", "engine texture_cache_clear: returned"};
@@ -454,7 +454,7 @@ auto untrack_allocation(void *pointer) -> void
 
 }
 
-ELUVIAN_CDECL auto malloc_detour(std::size_t size) -> void *
+LYRIUM_CDECL auto malloc_detour(std::size_t size) -> void *
 {
     const auto trace =
         FirstCallTrace{1u << 10u, "engine malloc: enter", "engine malloc: returned"};
@@ -478,7 +478,7 @@ ELUVIAN_CDECL auto malloc_detour(std::size_t size) -> void *
     return result;
 }
 
-ELUVIAN_CDECL auto free_detour(void *pointer) -> void
+LYRIUM_CDECL auto free_detour(void *pointer) -> void
 {
     const auto trace =
         FirstCallTrace{1u << 11u, "engine free: enter", "engine free: returned"};
@@ -494,7 +494,7 @@ ELUVIAN_CDECL auto free_detour(void *pointer) -> void
     original(pointer);
 }
 
-ELUVIAN_CDECL auto realloc_detour(void *pointer, std::size_t size) -> void *
+LYRIUM_CDECL auto realloc_detour(void *pointer, std::size_t size) -> void *
 {
     const auto trace =
         FirstCallTrace{1u << 12u, "engine realloc: enter", "engine realloc: returned"};

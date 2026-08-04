@@ -1,4 +1,4 @@
-#include "eluvian/resettable_texture.h"
+#include "lyrium/resettable_texture.h"
 
 #include <algorithm>
 #include <atomic>
@@ -11,14 +11,14 @@
 
 #include <windows.h>
 
-#include "eluvian/allocators/global_allocator.h"
-#include "eluvian/containers/map.h"
-#include "eluvian/containers/unordered_map.h"
-#include "eluvian/containers/unordered_set.h"
-#include "eluvian/containers/vector.h"
-#include "eluvian/diag/texture_size.h"
+#include "lyrium/allocators/global_allocator.h"
+#include "lyrium/containers/map.h"
+#include "lyrium/containers/unordered_map.h"
+#include "lyrium/containers/unordered_set.h"
+#include "lyrium/containers/vector.h"
+#include "lyrium/diag/texture_size.h"
 
-namespace eluvian
+namespace lyrium
 {
 
 namespace
