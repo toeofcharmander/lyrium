@@ -1,3 +1,4 @@
+#include "lyrium/texture/level_validity.h"
 #include "lyrium/resettable_texture.h"
 
 #include <algorithm>
@@ -386,7 +387,7 @@ class ResettableTexture final : public ::IDirect3DTexture9
         auto result = D3D_OK;
         if ((flags & D3DLOCK_READONLY) == 0u)
         {
-            valid_[level] = true;
+            valid_.mark_valid(level);
             result = upload_level(level, static_cast<const std::byte *>(view));
         }
         ::UnmapViewOfFile(view);
@@ -506,7 +507,7 @@ class ResettableTexture final : public ::IDirect3DTexture9
         auto offset = std::size_t{};
         layouts_.reserve(shape_.levels);
         locks_.resize(shape_.levels, LockState{.view = nullptr, .flags = 0u});
-        valid_.resize(shape_.levels, false);
+
 
         for (auto level = std::uint32_t{}; level < shape_.levels; ++level)
         {
@@ -695,7 +696,7 @@ class ResettableTexture final : public ::IDirect3DTexture9
         }
         for (auto level = std::uint32_t{}; level < shape_.levels; ++level)
         {
-            if (valid_[level])
+            if (valid_.is_valid(level))
             {
                 upload_level(level, view);
             }
@@ -715,7 +716,7 @@ class ResettableTexture final : public ::IDirect3DTexture9
     std::uint32_t block_bytes_{0u};
     Vector<Layout> layouts_;
     Vector<LockState> locks_;
-    Vector<bool> valid_;
+    texture::LevelValidity valid_;
     std::mutex lock_mutex_;
     std::atomic<::DWORD> priority_{0u};
     std::atomic<::DWORD> lod_{0u};
