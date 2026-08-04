@@ -42,6 +42,7 @@ lyrium_add_test(page_allocator_test SOURCES unit/page_allocator_test.cpp)
 lyrium_add_test(free_list_allocator_test SOURCES unit/free_list_allocator_test.cpp)
 lyrium_add_test(targets_table_test SOURCES unit/targets_table_test.cpp)
 lyrium_add_test(texture_size_test NEEDS_D3D9_SHIM SOURCES unit/texture_size_test.cpp)
+lyrium_add_test(block_rect_test SOURCES unit/block_rect_test.cpp)
 lyrium_add_test(texture_totals_test SOURCES unit/texture_totals_test.cpp)
 
 # Own binary: this one drives the process-global counters into a wrapped state,

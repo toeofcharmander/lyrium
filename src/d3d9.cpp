@@ -30,7 +30,6 @@
 #include "lyrium/resettable_texture.h"
 #include "lyrium/resource_tracker.h"
 #include "lyrium/texture_recycler.h"
-#include "lyrium/texture_stager.h"
 #include "lyrium/utils.h"
 
 
@@ -226,17 +225,6 @@ __declspec(dllexport) ::HRESULT WINAPI IDirect3DDevice9_CreateIndexBuffer_hook(
     ::IDirect3DIndexBuffer9 **ppIndexBuffer,
     ::HANDLE *pSharedHandle);
 __declspec(dllexport) ::ULONG WINAPI IDirect3DTexture9_Release_hook(::PROC orig_func, void *that);
-__declspec(dllexport) ::HRESULT WINAPI IDirect3DTexture9_LockRect_hook(
-    ::PROC orig_func,
-    void *that,
-    ::UINT Level,
-    ::D3DLOCKED_RECT *pLockedRect,
-    const ::RECT *pRect,
-    ::DWORD Flags);
-__declspec(dllexport) ::HRESULT WINAPI IDirect3DTexture9_UnlockRect_hook(
-    ::PROC orig_func,
-    void *that,
-    ::UINT Level);
 __declspec(dllexport) ::HRESULT WINAPI IDirect3DDevice9_CreateTexture_hook(
     ::PROC orig_func,
     void *that,
@@ -428,47 +416,6 @@ __declspec(dllexport) ::HRESULT WINAPI IDirect3DDevice9_CreateIndexBuffer_hook(
     return res;
 }
 
-__declspec(dllexport) ::HRESULT WINAPI IDirect3DTexture9_LockRect_hook(
-    ::PROC orig_func,
-    void *that,
-    ::UINT Level,
-    ::D3DLOCKED_RECT *pLockedRect,
-    const ::RECT *pRect,
-    ::DWORD Flags)
-{
-    using orig_call_type = OrigFuncType<decltype(&IDirect3DTexture9_LockRect_hook)>;
-
-    auto *texture = reinterpret_cast<::IDirect3DTexture9 *>(that);
-    if (lyrium::TextureStager::instance().is_staged(texture))
-    {
-        const auto hr =
-            lyrium::TextureStager::instance().lock_rect(texture, Level, pLockedRect, pRect, Flags);
-        if (SUCCEEDED(hr))
-        {
-            return hr;
-        }
-
-    }
-
-    return reinterpret_cast<orig_call_type>(orig_func)(that, Level, pLockedRect, pRect, Flags);
-}
-
-__declspec(dllexport) ::HRESULT WINAPI IDirect3DTexture9_UnlockRect_hook(
-    ::PROC orig_func,
-    void *that,
-    ::UINT Level)
-{
-    using orig_call_type = OrigFuncType<decltype(&IDirect3DTexture9_UnlockRect_hook)>;
-
-    auto *texture = reinterpret_cast<::IDirect3DTexture9 *>(that);
-    if (lyrium::TextureStager::instance().is_staged(texture))
-    {
-        return lyrium::TextureStager::instance().unlock_rect(texture, Level);
-    }
-
-    return reinterpret_cast<orig_call_type>(orig_func)(that, Level);
-}
-
 __declspec(dllexport) ::ULONG WINAPI IDirect3DTexture9_Release_hook(::PROC orig_func, void *that)
 {
     using orig_call_type = OrigFuncType<decltype(&IDirect3DTexture9_Release_hook)>;
@@ -493,7 +440,6 @@ __declspec(dllexport) ::ULONG WINAPI IDirect3DTexture9_Release_hook(::PROC orig_
     if (res == 0)
     {
         lyrium::TextureRecycler::instance().forget(texture);
-        lyrium::TextureStager::instance().forget(texture);
         if (lyrium::stats::live_textures.untrack(that))
         {
             forget_texture(that);
@@ -887,7 +833,6 @@ __declspec(dllexport) ::HRESULT WINAPI IDirect3D9_CreateDevice_hook(
     auto caps = ::D3DCAPS9{};
     device->GetDeviceCaps(&caps);
 
-    lyrium::TextureStager::instance().configure(config.texture_pool.prefer_default, device);
 
     lyrium::breadcrumb("d3d CreateDevice: returned");
     return res;

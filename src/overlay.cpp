@@ -14,7 +14,6 @@
 #include "lyrium/diag/sampler.h"
 #include "lyrium/diag/texture_totals.h"
 #include "lyrium/stats.h"
-#include "lyrium/texture_stager.h"
 
 LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
@@ -118,26 +117,10 @@ auto draw_staging() -> void
         return;
     }
 
-    const auto stager = TextureStager::instance().stats();
     ::ImGui::Text(
         "moved out of managed pool: %llu textures, %.1f MB",
         static_cast<unsigned long long>(moved),
         megabytes(stats::pool_override_bytes.load(std::memory_order_relaxed)));
-    ::ImGui::Text(
-        "staging buffers: %llu created, %llu released, %llu held",
-        static_cast<unsigned long long>(stager.staging_created),
-        static_cast<unsigned long long>(stager.staging_released),
-        static_cast<unsigned long long>(stager.staging_created - stager.staging_released));
-    ::ImGui::Text("uploads: %llu", static_cast<unsigned long long>(stager.uploads));
-
-    if (stager.failures > 0u)
-    {
-        ::ImGui::TextColored(
-            ::ImVec4{1.0f, 0.3f, 0.3f, 1.0f},
-            "upload failures: %llu (worst format %#x)",
-            static_cast<unsigned long long>(stager.failures),
-            stager.worst_format);
-    }
     if (const auto reverts = stats::pool_reverts.load(std::memory_order_relaxed); reverts > 0u)
     {
         ::ImGui::TextColored(
