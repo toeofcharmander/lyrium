@@ -28,6 +28,7 @@
 #include "lyrium/hooks/com_hook.h"
 #include "lyrium/log.h"
 #include "lyrium/resettable_texture.h"
+#include "lyrium/policy/texture_placement_policy.h"
 #include "lyrium/resource_tracker.h"
 #include "lyrium/texture_recycler.h"
 #include "lyrium/utils.h"
@@ -58,6 +59,18 @@ auto config = lyrium::Config{};
 
 std::mutex texture_size_mutex;
 lyrium::UnorderedMap<void *, std::pair<std::uint64_t, std::uint32_t>> texture_sizes;
+
+// Built once from the loaded configuration. This is a stepping stone: the policy
+// is owned by a composition root in a later step, not reached through a global.
+auto placement_policy() -> const lyrium::policy::TexturePlacementPolicy &
+{
+    static const auto policy = lyrium::policy::TexturePlacementPolicy{lyrium::policy::TexturePlacementConfig{
+        .prefer_default = config.texture_pool.prefer_default,
+        .minimum_bytes = config.texture_pool.minimum_bytes,
+        .fall_back_to_managed = config.texture_pool.fall_back_to_managed,
+    }};
+    return policy;
+}
 
 auto pool_index(::D3DPOOL pool) -> std::size_t
 {
@@ -479,18 +492,20 @@ __declspec(dllexport) ::HRESULT WINAPI IDirect3DDevice9_CreateTexture_hook(
         }
     }
 
-    auto pool = Pool;
-    auto pool_overridden = false;
-    if (config.texture_pool.prefer_default && Pool == D3DPOOL_MANAGED &&
-        lyrium::diag::is_block_compressed(Format) &&
-        bytes >= config.texture_pool.minimum_bytes &&
-        (Usage &
-         (D3DUSAGE_RENDERTARGET | D3DUSAGE_DEPTHSTENCIL | D3DUSAGE_DYNAMIC |
-          D3DUSAGE_AUTOGENMIPMAP)) == 0)
-    {
-        pool = D3DPOOL_DEFAULT;
-        pool_overridden = true;
-    }
+    const auto placement = placement_policy().place(
+        lyrium::texture::TextureDesc{
+            .width = Width,
+            .height = Height,
+            .depth = 1u,
+            .levels = Levels,
+            .usage = lyrium::texture::TextureUsage{static_cast<std::uint32_t>(Usage)},
+            .format = static_cast<lyrium::texture::PixelFormat>(Format),
+            .pool = static_cast<lyrium::texture::TexturePool>(Pool),
+        },
+        bytes);
+
+    auto pool = static_cast<::D3DPOOL>(placement.pool);
+    auto pool_overridden = placement.relocated();
 
     const auto key = lyrium::TextureRecycler::Key{
         .width = Width,
@@ -539,7 +554,7 @@ __declspec(dllexport) ::HRESULT WINAPI IDirect3DDevice9_CreateTexture_hook(
             res = E_OUTOFMEMORY;
         }
     }
-    if (pool_overridden && FAILED(res) && config.texture_pool.fall_back_to_managed)
+    if (FAILED(res) && placement_policy().may_fall_back(placement))
     {
         res = original(that, Width, Height, Levels, Usage, Format, D3DPOOL_MANAGED, ppTexture, pSharedHandle);
         pool = D3DPOOL_MANAGED;
