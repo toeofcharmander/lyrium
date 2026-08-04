@@ -45,6 +45,7 @@ lyrium_add_test(texture_size_test NEEDS_D3D9_SHIM SOURCES unit/texture_size_test
 lyrium_add_test(block_rect_test SOURCES unit/block_rect_test.cpp)
 lyrium_add_test(level_validity_test SOURCES unit/level_validity_test.cpp)
 lyrium_add_test(ref_count_test SOURCES unit/ref_count_test.cpp)
+lyrium_add_test(never_destroyed_test SOURCES unit/never_destroyed_test.cpp)
 lyrium_add_test(texture_desc_test SOURCES unit/texture_desc_test.cpp)
 lyrium_add_test(texture_placement_policy_test SOURCES unit/texture_placement_policy_test.cpp)
 lyrium_add_test(texture_ledger_test SOURCES unit/texture_ledger_test.cpp)

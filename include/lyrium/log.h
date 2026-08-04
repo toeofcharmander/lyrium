@@ -20,6 +20,7 @@
 #include <vector>
 
 #include <windows.h>
+#include "lyrium/never_destroyed.h"
 
 namespace lyrium
 {
@@ -50,8 +51,11 @@ class LogSink
   public:
     static auto instance() -> LogSink &
     {
-        static auto sink = LogSink{};
-        return sink;
+        // Never destroyed. Its destructor locked a mutex the writer thread may
+        // have been killed holding and then joined a thread that will never
+        // wake, both under the loader lock. See never_destroyed.h.
+        static auto sink = NeverDestroyed<LogSink>{};
+        return sink.get();
     }
 
     auto start(const std::filesystem::path &directory, std::string_view stem) -> void
@@ -77,30 +81,6 @@ class LogSink
                 register_own_thread();
                 run();
             }};
-    }
-
-    auto stop() -> void
-    {
-        {
-            auto lock = std::scoped_lock{mutex_};
-            if (!running_)
-            {
-                return;
-            }
-            running_ = false;
-        }
-        signal_.notify_all();
-        if (writer_.joinable())
-        {
-            writer_.join();
-        }
-
-        auto lock = std::scoped_lock{mutex_};
-        drain_locked();
-        events_.flush();
-        text_.flush();
-        events_.close();
-        text_.close();
     }
 
     auto push_event(std::string &&line) -> void
@@ -153,10 +133,8 @@ class LogSink
 
     LogSink() = default;
 
-    ~LogSink()
-    {
-        stop();
-    }
+    template <class>
+    friend class lyrium::NeverDestroyed;
 
     auto push(std::string &&line, bool is_event) -> void
     {
@@ -511,11 +489,6 @@ inline auto breadcrumb_reset(const std::filesystem::path &directory) -> void
 inline auto log_start(const std::filesystem::path &directory, std::string_view stem) -> void
 {
     detail::LogSink::instance().start(directory, stem);
-}
-
-inline auto log_stop() -> void
-{
-    detail::LogSink::instance().stop();
 }
 
 inline auto log_tail() -> std::string

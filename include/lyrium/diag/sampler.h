@@ -2,13 +2,13 @@
 
 #include <atomic>
 #include <chrono>
-#include <condition_variable>
 #include <cstdint>
 #include <mutex>
 #include <string_view>
 #include <thread>
 
 #include "lyrium/dao/engine_hooks.h"
+#include "lyrium/never_destroyed.h"
 #include "lyrium/diag/va_space.h"
 #include "lyrium/log.h"
 #include "lyrium/utils.h"
@@ -22,8 +22,10 @@ class Sampler
   public:
     static auto instance() -> Sampler &
     {
-        static auto sampler = Sampler{};
-        return sampler;
+        // Never destroyed, for the same reason as LogSink. See
+        // never_destroyed.h.
+        static auto sampler = NeverDestroyed<Sampler>{};
+        return sampler.get();
     }
 
     auto start(std::int64_t interval_ms) -> void
@@ -34,32 +36,16 @@ class Sampler
             return;
         }
         running_ = true;
-        interval_ms_ = interval_ms;
         lock.unlock();
 
+        // The interval is captured by value rather than read from a member, so
+        // the loop shares no mutable state with anyone.
         thread_ = std::thread{
-            [this]
+            [this, interval_ms]
             {
                 register_own_thread();
-                run();
+                run(interval_ms);
             }};
-    }
-
-    auto stop() -> void
-    {
-        {
-            auto lock = std::scoped_lock{mutex_};
-            if (!running_)
-            {
-                return;
-            }
-            running_ = false;
-        }
-        signal_.notify_all();
-        if (thread_.joinable())
-        {
-            thread_.join();
-        }
     }
 
     // Called after every sample so the DLL can add its own figures to the same
@@ -125,39 +111,35 @@ class Sampler
   private:
     Sampler() = default;
 
-    ~Sampler()
-    {
-        stop();
-    }
+    template <class>
+    friend class lyrium::NeverDestroyed;
 
-    auto run() -> void
+    // Runs until the process ends. Deliberately takes no lock: a thread killed
+    // by ExitProcess while holding one holds it forever, and anything that later
+    // waits on it deadlocks inside the loader. The interval is read once, in
+    // start(), so the loop touches no shared mutable state at all.
+    //
+    // The trailing sample_now("shutdown") that used to follow this loop was
+    // unreachable -- nothing ever called stop() -- which is exactly why no live
+    // log has ever contained a shutdown sample. It now happens at detach.
+    auto run(std::int64_t interval_ms) -> void
     {
         sample_now("startup");
 
         while (true)
         {
-            auto lock = std::unique_lock{mutex_};
-            signal_.wait_for(lock, std::chrono::milliseconds{interval_ms_}, [this] { return !running_; });
-            if (!running_)
-            {
-                break;
-            }
-            lock.unlock();
-
+            std::this_thread::sleep_for(std::chrono::milliseconds{interval_ms});
             sample_now("periodic");
         }
-
-        sample_now("shutdown");
     }
 
     std::mutex mutex_;
-    std::condition_variable signal_;
     std::thread thread_;
     std::atomic<std::uint64_t> last_largest_free_{};
     std::atomic<std::uint64_t> last_largest_free_below_2g_{};
     std::atomic<std::uint64_t> last_total_free_{};
     std::atomic<Observer> observer_{nullptr};
-    std::int64_t interval_ms_{5000};
+    // Start-once latch only; nothing ever clears it.
     bool running_{false};
 };
 
