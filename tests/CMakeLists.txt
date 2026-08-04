@@ -34,4 +34,3 @@ lyrium_add_test(free_list_allocator_test SOURCES unit/free_list_allocator_test.c
 
 # Expected to fail until the defects they pin are fixed.
 lyrium_add_test(free_list_allocator_defect_test KNOWN_DEFECT SOURCES unit/free_list_allocator_defect_test.cpp)
-lyrium_add_test(sha256_defect_test KNOWN_DEFECT SOURCES unit/sha256_defect_test.cpp)

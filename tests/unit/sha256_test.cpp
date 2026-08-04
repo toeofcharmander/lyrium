@@ -108,6 +108,27 @@ TEST(Sha256Test, ProducesLowercaseHexOfExactlySixtyFourCharacters)
     }
 }
 
+// Regression: finish() used to leave buffered_ at 64 and state_ carrying the
+// previous chaining value, so a reused hasher compressed a stale block and
+// returned a wrong digest. Latent rather than live at the time only because the
+// static hex() helper always constructs a fresh hasher.
+TEST(Sha256Test, HasherIsReusableAfterFinish)
+{
+    const auto expected = Sha256::hex("abc", 3u);
+
+    Sha256 hasher{};
+    hasher.update("abc", 3u);
+    ASSERT_EQ(to_hex(hasher.finish()), expected);
+
+    hasher.update("abc", 3u);
+    EXPECT_EQ(to_hex(hasher.finish()), expected) << "finish() must reset the hasher for the next message";
+
+    // A different message through the same object must also be correct, which
+    // catches a reset that clears the buffer but not the length counter.
+    hasher.update(two_block_input, 56u);
+    EXPECT_EQ(to_hex(hasher.finish()), two_block_digest);
+}
+
 TEST(Sha256Test, EmptyUpdateDoesNotChangeTheResult)
 {
     Sha256 hasher{};

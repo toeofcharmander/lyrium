@@ -71,6 +71,12 @@ class Sha256
             digest[i * 4u + 2u] = static_cast<std::uint8_t>((state_[i] >> 8) & 0xFFu);
             digest[i * 4u + 3u] = static_cast<std::uint8_t>(state_[i] & 0xFFu);
         }
+
+        // finish() ends a message, not the object. Without this the padding leaves
+        // buffered_ at 64 and state_ carrying the previous chaining value, so a
+        // reused hasher compresses a stale block and returns a wrong digest.
+        *this = Sha256{};
+
         return digest;
     }
 
