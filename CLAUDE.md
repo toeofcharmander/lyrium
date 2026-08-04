@@ -56,13 +56,52 @@ A test marked `KNOWN_DEFECT` pins a real bug and is expected to fail. Do not
 Formatting: `.clang-format` at the root (Allman braces, 4-space indent, 120
 columns). Run `clang-format` on anything you touch.
 
-## Testing
+## Running it in the game
 
-There is no automated test suite, and there cannot be much of one -- the code only
-does anything when loaded into the game. Verification means copying the built
-`d3d9.dll` into the game's `bin_ship` directory next to `DAOrigins.exe`, launching
-the game, and watching the overlay and `lyrium_logs/`. Treat "it compiles" as a
-weak signal; a change is only confirmed once it has run in the game.
+Unit tests cover the pure logic, but most of this code only does anything once
+loaded into the game, so treat "it compiles and the suite is green" as a weak
+signal. A change is confirmed only after it has run in the game.
+
+Copy the built DLL to the game's `bin_ship` directory and **launch
+`DAOrigins.exe` directly**:
+
+```
+cp build/dll-win32/src/d3d9.dll "<game>/bin_ship/d3d9.dll"   # close the game first
+```
+
+**Do not launch through `DAOriginsLauncher.exe` or the desktop shortcut.** The
+chain is `DAOriginsLauncher.exe` -> `DAOriginsConfig.exe` -> `DAOrigins.exe`, and
+the config utility crashes with `0xc0000094` (integer divide by zero) inside
+itself on modern hardware. It imports no `d3d9.dll` at all, so that crash is never
+caused by this project -- but it stops the chain before the game ever starts.
+Only `DAOrigins.exe` loads the proxy.
+
+Diagnosing a failed launch: if `bin_ship/lyrium_logs/` was not created, our code
+never ran, which points at the launch path rather than at a change. The Windows
+Application event log names the faulting module and is the fastest way to tell
+those apart. Note that a DLL failing to load produces a **GUI dialog**, which is
+invisible from WSL and shows up only as an odd exit code with empty stderr -- if
+you are driving the build from WSL, ask what appeared on screen.
+
+The `lyrium.ini` next to the executable controls everything (see `config.h`).
+Useful for a smoke test:
+
+```
+logging=1
+overlay=1
+```
+
+**Config trap:** every key is parsed section-blind by `load_config()` except
+`main_pool_mb`, which `d3d9.cpp` reads with `GetPrivateProfileIntA` and which
+therefore requires a literal `[lyrium]` section header. Without it the pool patch
+silently logs `disabled` and that mechanism never runs. Two parsers, two
+incompatible formats, no warning.
+
+Verified baseline on the GOG Ultimate Edition: overlay renders, main menu reached,
+and all ten engine hooks report `installed` at their preferred addresses with
+`base_delta == 0`. Because there is no relocation, the SHA-256 body check actually
+executes, so `dao/targets.h` is verified against that binary rather than assumed
+to match it.
 
 ## Architecture
 
