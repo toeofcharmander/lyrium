@@ -104,10 +104,6 @@ class Sampler
             lock.unlock();
 
             sample_now("periodic");
-
-            if (++ticks_ % 6 == 0)
-            {
-            }
         }
 
         sample_now("shutdown");
@@ -119,7 +115,6 @@ class Sampler
     std::atomic<std::uint64_t> last_largest_free_{};
     std::atomic<std::uint64_t> last_total_free_{};
     std::int64_t interval_ms_{5000};
-    std::uint64_t ticks_{0};
     bool running_{false};
 };
 

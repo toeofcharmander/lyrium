@@ -348,9 +348,4 @@ inline auto image_base_delta() -> std::intptr_t
     return delta;
 }
 
-inline auto resolve(std::uintptr_t address) -> void *
-{
-    return reinterpret_cast<void *>(address + static_cast<std::uintptr_t>(image_base_delta()));
-}
-
 }

@@ -199,19 +199,6 @@ inline constexpr auto target(TargetId id) -> const Target &
     return targets[static_cast<std::size_t>(id)];
 }
 
-struct Global
-{
-    const char *name;
-    const char *comment;
-    std::uintptr_t address;
-};
 
-inline constexpr Global globals[] = {
-    {
-        .name = "texture_manager_singleton",
-        .comment = "TextureManager* - written by initializeTextureManager @ 0x008472C0",
-        .address = 0x00c39cfc,
-    },
-};
 
 }

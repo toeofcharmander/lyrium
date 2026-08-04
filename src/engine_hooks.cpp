@@ -572,23 +572,6 @@ auto install_engine_hooks(const EngineConfig &configuration) -> void
         install(hook_realloc, TargetId::crt_realloc, reinterpret_cast<void *>(&realloc_detour));
     }
 
-    const InlineHook *all[] = {
-        &hook_load_texture_file,
-        &hook_create_texture_cached,
-        &hook_create_texture_registered,
-        &hook_stream_load,
-        &hook_decode_texture_memory,
-        &hook_create_texture_2d,
-        &hook_create_texture_from_memory,
-        &hook_create_volume_from_memory,
-        &hook_evict,
-        &hook_clear,
-        &hook_malloc,
-        &hook_free,
-        &hook_realloc,
-    };
-
-    (void)all;
 
 }
 
