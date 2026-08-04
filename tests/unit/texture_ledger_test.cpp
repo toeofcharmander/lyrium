@@ -185,3 +185,45 @@ TEST(TextureLedger, ConcurrentTrafficKeepsTheBooksBalanced)
     EXPECT_EQ(totals.pool_sum(), 0u);
     EXPECT_EQ(totals.released_bytes, static_cast<std::uint64_t>(threads) * per_thread * 64u);
 }
+
+TEST(TextureLedger, RelocatedBytesAreCurrentNotCumulative)
+{
+    // The cumulative counter in stats.h never decrements, so it overstates the
+    // saving once textures retire. This figure is what the placement policy is
+    // keeping out of the address space right now.
+    TextureLedger ledger{};
+
+    ledger.note_created(handle(1), TexturePool::D3DPOOL_DEFAULT, one_mb, true);
+    ledger.note_created(handle(2), TexturePool::D3DPOOL_DEFAULT, 2u * one_mb, true);
+    ledger.note_created(handle(3), TexturePool::D3DPOOL_MANAGED, 4u * one_mb, false);
+
+    auto totals = ledger.totals();
+    EXPECT_EQ(totals.relocated_bytes, 3u * one_mb) << "only the relocated ones count";
+    EXPECT_EQ(totals.relocated_count, 2u);
+    EXPECT_EQ(totals.total, 7u * one_mb);
+
+    ledger.note_destroyed(handle(2));
+    totals = ledger.totals();
+    EXPECT_EQ(totals.relocated_bytes, one_mb) << "retiring a relocated texture must reduce the figure";
+    EXPECT_EQ(totals.relocated_count, 1u);
+
+    ledger.note_destroyed(handle(3));
+    totals = ledger.totals();
+    EXPECT_EQ(totals.relocated_bytes, one_mb) << "retiring a non-relocated one must not";
+}
+
+TEST(TextureLedger, ReRegisteringChangesWhetherATextureCountsAsRelocated)
+{
+    TextureLedger ledger{};
+
+    ledger.note_created(handle(1), TexturePool::D3DPOOL_DEFAULT, one_mb, true);
+    ASSERT_EQ(ledger.totals().relocated_bytes, one_mb);
+
+    // The managed fallback fired: the same handle is now not a relocation.
+    ledger.note_created(handle(1), TexturePool::D3DPOOL_MANAGED, one_mb, false);
+
+    const auto totals = ledger.totals();
+    EXPECT_EQ(totals.relocated_bytes, 0u);
+    EXPECT_EQ(totals.relocated_count, 0u);
+    EXPECT_EQ(totals.total, one_mb);
+}

@@ -29,6 +29,12 @@ struct TextureTotals
     std::uint64_t live_count{};
     std::uint64_t released_bytes{};
 
+    // Currently-live bytes that the placement policy moved out of the managed
+    // pool. This is the saving as it stands right now; the cumulative counter in
+    // stats.h never decrements and so overstates it once textures retire.
+    std::uint64_t relocated_bytes{};
+    std::uint64_t relocated_count{};
+
     [[nodiscard]] auto pool_sum() const -> std::uint64_t
     {
         std::uint64_t sum = 0u;
@@ -67,7 +73,7 @@ class BasicTextureLedger
     // Records a live texture. Re-registering a handle that is already live
     // replaces the previous record rather than adding to it, so a caller that
     // reports the same texture twice cannot inflate the totals.
-    auto note_created(TextureHandle texture, TexturePool pool, std::uint64_t bytes) -> void
+    auto note_created(TextureHandle texture, TexturePool pool, std::uint64_t bytes, bool relocated = false) -> void
     {
         if (texture == nullptr)
         {
@@ -82,8 +88,9 @@ class BasicTextureLedger
             records_.erase(existing);
         }
 
-        records_.emplace(texture, Record{.pool = pool, .bytes = bytes});
-        deposit(Record{.pool = pool, .bytes = bytes});
+        const auto record = Record{.pool = pool, .bytes = bytes, .relocated = relocated};
+        records_.emplace(texture, record);
+        deposit(record);
     }
 
     // Retires a texture. An unknown handle is a no-op, which is the property the
@@ -126,6 +133,8 @@ class BasicTextureLedger
         out.peak = peak_;
         out.live_count = records_.size();
         out.released_bytes = released_bytes_;
+        out.relocated_bytes = relocated_bytes_;
+        out.relocated_count = relocated_count_;
         return out;
     }
 
@@ -134,6 +143,7 @@ class BasicTextureLedger
     {
         TexturePool pool{};
         std::uint64_t bytes{};
+        bool relocated{};
     };
 
     using MapAllocator = Alloc<std::pair<const TextureHandle, Record>>;
@@ -158,6 +168,11 @@ class BasicTextureLedger
     {
         by_pool_[bucket_for(record.pool)] += record.bytes;
         total_ += record.bytes;
+        if (record.relocated)
+        {
+            relocated_bytes_ += record.bytes;
+            ++relocated_count_;
+        }
         if (total_ > peak_)
         {
             peak_ = total_;
@@ -168,6 +183,11 @@ class BasicTextureLedger
     {
         by_pool_[bucket_for(record.pool)] -= record.bytes;
         total_ -= record.bytes;
+        if (record.relocated)
+        {
+            relocated_bytes_ -= record.bytes;
+            --relocated_count_;
+        }
     }
 
     mutable std::mutex mutex_{};
@@ -176,6 +196,8 @@ class BasicTextureLedger
     std::uint64_t total_{};
     std::uint64_t peak_{};
     std::uint64_t released_bytes_{};
+    std::uint64_t relocated_bytes_{};
+    std::uint64_t relocated_count_{};
 };
 
 using TextureLedger = BasicTextureLedger<std::allocator>;

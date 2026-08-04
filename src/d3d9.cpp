@@ -79,10 +79,10 @@ auto placement_policy() -> const lyrium::policy::TexturePlacementPolicy &
     return policy;
 }
 
-auto remember_texture(void *texture, std::uint64_t bytes, ::D3DPOOL pool) -> void
+auto remember_texture(void *texture, std::uint64_t bytes, ::D3DPOOL pool, bool relocated) -> void
 {
     lyrium::texture_ledger().note_created(
-        texture, static_cast<lyrium::texture::TexturePool>(pool), bytes);
+        texture, static_cast<lyrium::texture::TexturePool>(pool), bytes, relocated);
 }
 
 auto forget_texture(void *texture) -> void
@@ -151,7 +151,8 @@ auto log_ledger_snapshot(std::string_view reason, const lyrium::diag::VaStats &)
 
     lyrium::log(
         "textures[{}]: live={} bytes={} peak={} released={} default={} managed={} systemmem={} scratch={} "
-        "unknown={} creates={} failures={} overrides={} override_bytes={} reverts={}",
+        "unknown={} live_relocated={} live_relocated_bytes={} creates={} failures={} overrides={} "
+        "override_bytes={} reverts={}",
         reason,
         totals.live_count,
         totals.total,
@@ -162,6 +163,8 @@ auto log_ledger_snapshot(std::string_view reason, const lyrium::diag::VaStats &)
         totals.by_pool[2],
         totals.by_pool[3],
         totals.by_pool[4],
+        totals.relocated_count,
+        totals.relocated_bytes,
         lyrium::stats::d3d_creates.load(std::memory_order_relaxed),
         lyrium::stats::d3d_create_failures.load(std::memory_order_relaxed),
         lyrium::stats::pool_overrides.load(std::memory_order_relaxed),
@@ -617,7 +620,7 @@ __declspec(dllexport) ::HRESULT WINAPI IDirect3DDevice9_CreateTexture_hook(
         if (auto *recycled = lyrium::TextureRecycler::instance().acquire(key); recycled != nullptr)
         {
             *ppTexture = recycled;
-            remember_texture(recycled, bytes, pool);
+            remember_texture(recycled, bytes, pool, placement.relocated());
             return S_OK;
         }
     }
@@ -693,7 +696,7 @@ __declspec(dllexport) ::HRESULT WINAPI IDirect3DDevice9_CreateTexture_hook(
     auto *texture = (SUCCEEDED(res) && ppTexture != nullptr) ? *ppTexture : nullptr;
     if (texture != nullptr)
     {
-        remember_texture(texture, bytes, pool);
+        remember_texture(texture, bytes, pool, pool_overridden);
         if (pool_overridden)
         {
             return res;
@@ -776,7 +779,7 @@ __declspec(dllexport) ::HRESULT WINAPI IDirect3DDevice9_CreateCubeTexture_hook(
     auto *texture = (SUCCEEDED(res) && ppCubeTexture != nullptr) ? *ppCubeTexture : nullptr;
     if (texture != nullptr)
     {
-        remember_texture(texture, bytes, Pool);
+        remember_texture(texture, bytes, Pool, false);
     }
 
     return res;
@@ -804,7 +807,7 @@ __declspec(dllexport) ::HRESULT WINAPI IDirect3DDevice9_CreateVolumeTexture_hook
     auto *texture = (SUCCEEDED(res) && ppVolumeTexture != nullptr) ? *ppVolumeTexture : nullptr;
     if (texture != nullptr)
     {
-        remember_texture(texture, bytes, Pool);
+        remember_texture(texture, bytes, Pool, false);
     }
 
     return res;
