@@ -4,13 +4,23 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-A proxy `d3d9.dll` (project name "lyrium") for Dragon Age: Origins on PC. DAO is a
-32-bit game with a 2 GB address space; long sessions fragment that space until no
-contiguous block is left for a texture allocation, DirectX returns out-of-memory,
-textures flicker, and the game crashes. This DLL sits between the game and the real
-`d3d9.dll` and attacks the fragmentation from several angles (see README.md for the
-full analysis). It is dropped next to `daorigins.exe`, which loads it instead of the
-system DLL.
+A proxy `d3d9.dll` (project name "lyrium") for Dragon Age: Origins on PC. It is
+dropped next to `daorigins.exe`, which loads it instead of the system DLL.
+
+DAO is a 32-bit game, so it has 2 GB of address space -- 4 GB on installs with
+the LAA patch, which most people apply. Long sessions fragment that space until
+no contiguous block is left for a texture allocation, DirectX returns
+out-of-memory, textures flicker, and the game crashes. The failure is
+fragmentation rather than exhaustion: a captured case had 20 MB free split
+across roughly 430 gaps.
+
+**Lineage.** Forked from `adarec1994/eluvian`, which built on Nathan Baggs'
+original research (`nathan-baggs/mandrel`). The central technique -- relocating
+managed textures to the DEFAULT pool and backing their CPU-side copy with a
+pagefile-backed file mapping only mapped during a lock -- is inherited and
+deliberately unchanged, because it is the right design. What has been rewritten
+is everything around it: the policy layer, the eviction behaviour, the install
+gate, and a test suite where there was none. See README.md.
 
 ## Build
 
@@ -99,6 +109,13 @@ including inside a value. A malformed number becomes zero rather than falling
 back to the default, so `recycler_budget_mb=abc` disables the recycler. And
 `Config::overlay` is declared `true` while the parser passes a fallback of
 `false`, so an absent key gives the opposite of the declared default.
+
+The rescue path is verified in the wild, not just under test: it has been
+exercised on both a 2 GB (unpatched) and a 4 GB (LAA-patched) install, each
+loaded heavily with mods, which is what actually generates the pressure needed to
+reach it. A normal session on a lightly modded install will never trigger it,
+because the placement policy keeps the address space healthy enough that it is
+not needed -- that is the design working, not a gap in coverage.
 
 A healthy session ends with `va[shutdown]`, `textures[shutdown]`,
 `rescue[shutdown]` and then `lyrium: log sealed`. **If those are missing the game
