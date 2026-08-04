@@ -28,3 +28,10 @@ function(lyrium_add_test name)
 endfunction()
 
 lyrium_add_test(abi_probe_test SOURCES unit/abi_probe_test.cpp)
+lyrium_add_test(sha256_test SOURCES unit/sha256_test.cpp)
+lyrium_add_test(page_allocator_test SOURCES unit/page_allocator_test.cpp)
+lyrium_add_test(free_list_allocator_test SOURCES unit/free_list_allocator_test.cpp)
+
+# Expected to fail until the defects they pin are fixed.
+lyrium_add_test(free_list_allocator_defect_test KNOWN_DEFECT SOURCES unit/free_list_allocator_defect_test.cpp)
+lyrium_add_test(sha256_defect_test KNOWN_DEFECT SOURCES unit/sha256_defect_test.cpp)

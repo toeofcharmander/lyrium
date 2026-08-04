@@ -14,29 +14,44 @@ system DLL.
 
 ## Build
 
-The target is a 32-bit Windows DLL built with a MinGW GCC toolchain (the flags are
-GCC-style and force `-m32`; the runtime links statically by default). There is no
-toolchain file in the repo.
+Two configurations, two toolchains, driven by `CMakePresets.json`. Both produce
+32-bit binaries so `sizeof(void*) == 4` is identical on both sides.
 
-**The compiler must be i686 MinGW-w64 GCC 14 or newer.** `utils.h` uses `<print>`
-and `containers/stack_trace.h` uses `<stacktrace>`, and `src/CMakeLists.txt`
-requests `cxx_std_26` -- all three need GCC 14+. Ubuntu's
-`g++-mingw-w64-i686-win32` is GCC 13.2 and cannot build this, so a plain apt
-cross-compile from WSL is not an option. Use a standalone i686 toolchain (winlibs
-GCC 15); MSYS2's MINGW32 environment is deprecated and not a viable source.
+**Shipping DLL — 32-bit Windows.** Needs i686 MinGW-w64 GCC 14 or newer on PATH
+(or `LYRIUM_MINGW32_ROOT` set). `utils.h` uses `<print>` and `src/CMakeLists.txt`
+requests `cxx_std_26`, both of which need GCC 14+, so Ubuntu's
+`g++-mingw-w64-i686-win32` (GCC 13.2) cannot build this and a plain apt
+cross-compile is not an option. winlibs is the toolchain source; MSYS2's MINGW32
+environment is deprecated.
 
 ```
-cmake -B build -G Ninja
-cmake --build build
+cmake --preset dll-win32 && cmake --build --preset dll-win32
 ```
 
-Output is `build/src/d3d9.dll`. ImGui (docking branch) and, when tests are enabled,
-googletest are pulled via FetchContent at configure time, so the first configure
-needs network access.
+Output is `build/dll-win32/src/d3d9.dll`. It must keep exactly that filename, and
+must import only system DLLs — check with
+`objdump -p ... | grep 'DLL Name'`. Any `libstdc++-6.dll`, `libgcc_s_dw2-1.dll`
+or `libwinpthread-1.dll` means static linking broke and it will not run next to
+the game.
 
-`LYRIUM_BUILD_TESTS=ON` exists in the top-level CMakeLists but there is currently
-no `tests/` directory -- enabling it fails at configure. If you add tests, create
-`tests/CMakeLists.txt` (GoogleTest, via CTest).
+**Tests — 32-bit Linux.** Needs `g++-multilib`; needs no MinGW and does not fetch
+ImGui.
+
+```
+cmake --preset tests-linux32 && cmake --build --preset tests-linux32
+ctest --preset tests-linux32          # must be green
+ctest --preset known-defects          # pinned bugs, expected to FAIL until fixed
+```
+
+Do not put `-m32` in `CMAKE_CXX_FLAGS`. It has to come from the toolchain file so
+it applies before CMake probes the compiler; set after `project()` it leaves
+`CMAKE_SIZEOF_VOID_P` at 8 and every `try_compile` answers for the wrong ABI.
+
+ImGui and googletest are fetched at configure time, so a first configure needs
+network access.
+
+A test marked `KNOWN_DEFECT` pins a real bug and is expected to fail. Do not
+"fix" it by weakening the assertion — fix the code, and the test turns green.
 
 Formatting: `.clang-format` at the root (Allman braces, 4-space indent, 120
 columns). Run `clang-format` on anything you touch.
