@@ -138,6 +138,33 @@ auto main_pool_override_bytes() -> std::uint32_t
 lyrium::dao::PoolPatchResult pool_patch_result{};
 const char *allocation_watch_mode{"not attempted"};
 
+// Attached to the sampler so every periodic address-space line is accompanied by
+// what lyrium believes it is holding. Without this the only way to read the
+// texture figures was to watch the overlay, which makes a session impossible to
+// diagnose after the fact.
+auto log_ledger_snapshot(std::string_view reason, const lyrium::diag::VaStats &) -> void
+{
+    const auto totals = lyrium::texture_ledger().totals();
+
+    lyrium::log(
+        "textures[{}]: live={} bytes={} peak={} released={} default={} managed={} systemmem={} scratch={} "
+        "unknown={} creates={} failures={} overrides={} reverts={}",
+        reason,
+        totals.live_count,
+        totals.total,
+        totals.peak,
+        totals.released_bytes,
+        totals.by_pool[0],
+        totals.by_pool[1],
+        totals.by_pool[2],
+        totals.by_pool[3],
+        totals.by_pool[4],
+        lyrium::stats::d3d_creates.load(std::memory_order_relaxed),
+        lyrium::stats::d3d_create_failures.load(std::memory_order_relaxed),
+        lyrium::stats::pool_overrides.load(std::memory_order_relaxed),
+        lyrium::stats::pool_reverts.load(std::memory_order_relaxed));
+}
+
 auto enable_allocation_watch() -> void
 {
     static constexpr auto threshold = 8ull * 1024ull * 1024ull;
@@ -881,7 +908,8 @@ extern "C"
         lyrium::dao::install_engine_hooks(config.engine);
         lyrium::breadcrumb("Direct3DCreate9: engine hooks installed");
 
-        lyrium::diag::Sampler::instance().start(config.sample_interval_ms);
+        lyrium::diag::Sampler::instance().set_observer(&log_ledger_snapshot);
+    lyrium::diag::Sampler::instance().start(config.sample_interval_ms);
         lyrium::breadcrumb("Direct3DCreate9: sampler started");
 
     }
