@@ -151,7 +151,7 @@ auto log_ledger_snapshot(std::string_view reason, const lyrium::diag::VaStats &)
 
     lyrium::log(
         "textures[{}]: live={} bytes={} peak={} released={} default={} managed={} systemmem={} scratch={} "
-        "unknown={} creates={} failures={} overrides={} reverts={}",
+        "unknown={} creates={} failures={} overrides={} override_bytes={} reverts={}",
         reason,
         totals.live_count,
         totals.total,
@@ -165,6 +165,7 @@ auto log_ledger_snapshot(std::string_view reason, const lyrium::diag::VaStats &)
         lyrium::stats::d3d_creates.load(std::memory_order_relaxed),
         lyrium::stats::d3d_create_failures.load(std::memory_order_relaxed),
         lyrium::stats::pool_overrides.load(std::memory_order_relaxed),
+        lyrium::stats::pool_override_bytes.load(std::memory_order_relaxed),
         lyrium::stats::pool_reverts.load(std::memory_order_relaxed));
 
     const auto rescue = rescue_coordinator().stats();
