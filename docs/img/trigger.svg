@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 860 190" width="860" height="190" role="img" aria-label="A number line showing the old fixed 16 megabyte watermark sitting below the 18.9 megabyte texture the game actually creates, so no rescue fired for the allocation most likely to fail.">
+  <defs><marker id="t" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><polygon points="0,1 9,5 0,9" fill="#3d9fbd"/></marker></defs>
+  <g font-family="system-ui, sans-serif">
+    <line x1="40" y1="66" x2="820" y2="66" stroke="#7d8590" stroke-width="1.2"/>
+    <text x="40" y="86" font-size="10.5" fill="#7d8590">0</text>
+    <text x="820" y="86" font-size="10.5" fill="#7d8590" text-anchor="end">largest contiguous free block</text>
+    <rect x="330" y="58" width="58" height="16" fill="#c1554d" opacity="0.18"/>
+    <line x1="330" y1="52" x2="330" y2="80" stroke="#a9793a" stroke-width="1.8"/>
+    <text x="330" y="44" font-size="11" fill="#a9793a" text-anchor="middle" font-family="ui-monospace, monospace">16.0 MB</text>
+    <text x="330" y="104" font-size="10.5" fill="#a9793a" text-anchor="middle">old watermark</text>
+    <line x1="388" y1="52" x2="388" y2="80" stroke="#c1554d" stroke-width="1.8"/>
+    <text x="388" y="44" font-size="11" fill="#c1554d" text-anchor="middle" font-family="ui-monospace, monospace">18.9 MB</text>
+    <text x="404" y="104" font-size="10.5" fill="#c1554d" text-anchor="middle">largest texture the game creates</text>
+    <text x="359" y="130" font-size="10.5" fill="#c1554d" text-anchor="middle">no rescue fires in this gap</text>
+    <text x="359" y="145" font-size="10.5" fill="#c1554d" text-anchor="middle">but the allocation still fails</text>
+    <line x1="560" y1="52" x2="560" y2="80" stroke="#3d9fbd" stroke-width="1.8"/>
+    <text x="560" y="44" font-size="11" fill="#3d9fbd" text-anchor="middle" font-family="ui-monospace, monospace">request x 2</text>
+    <text x="560" y="104" font-size="10.5" fill="#3d9fbd" text-anchor="middle">new trigger, scales with the ask</text>
+    <line x1="556" y1="120" x2="470" y2="120" stroke="#3d9fbd" stroke-width="1.2" marker-end="url(#t)"/>
+    <text x="640" y="124" font-size="10.5" fill="#7d8590">fires before the block gets tight</text>
+    <text x="40" y="176" font-size="10.5" fill="#7d8590" font-family="ui-monospace, monospace">a 32 MB floor also applies, so a stream of small textures cannot keep the rescue disarmed</text>
+  </g>
+</svg>

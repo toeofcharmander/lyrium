@@ -20,7 +20,8 @@ managed textures to the DEFAULT pool and backing their CPU-side copy with a
 pagefile-backed file mapping only mapped during a lock -- is inherited and
 deliberately unchanged, because it is the right design. What has been rewritten
 is everything around it: the policy layer, the eviction behaviour, the install
-gate, and a test suite where there was none. See README.md.
+gate, and a test suite where there was none. `docs/design-vs-eluvian.md` diagrams
+the differences; see also README.md.
 
 ## Build
 
@@ -50,8 +51,10 @@ ImGui.
 ```
 cmake --preset tests-linux32 && cmake --build --preset tests-linux32
 ctest --preset tests-linux32          # must be green
-ctest --preset known-defects          # pinned bugs, expected to FAIL until fixed
 ```
+
+There is also a `known-defects` preset, currently empty. It exists so a newly
+found bug can be pinned by a failing test without turning the main suite red.
 
 Do not put `-m32` in `CMAKE_CXX_FLAGS`. It has to come from the toolchain file so
 it applies before CMake probes the compiler; set after `project()` it leaves
@@ -62,6 +65,8 @@ network access.
 
 A test marked `KNOWN_DEFECT` pins a real bug and is expected to fail. Do not
 "fix" it by weakening the assertion — fix the code, and the test turns green.
+Every defect pinned this way so far has been fixed, so the label is currently
+unused.
 
 Formatting: `.clang-format` at the root (Allman braces, 4-space indent, 120
 columns). Run `clang-format` on anything you touch.
@@ -125,8 +130,8 @@ earlier, the last breadcrumb names the statement that hung.
 
 Verified baseline on the GOG Ultimate Edition: overlay renders, all ten engine
 hooks report `installed` at their preferred addresses with `base_delta == 0`, and
-the executable is large-address-aware so it has ~4 GB rather than the 2 GB the
-README assumes. Because there is no relocation, the SHA-256 body check actually
+that install is large-address-aware, so calibrate thresholds against ~4 GB there
+and against 2 GB on an unpatched one. Because there is no relocation, the SHA-256 body check actually
 executes, so `dao/targets.h` is verified against that binary rather than assumed
 to match it. Note a full address-space walk costs 6-20 ms and grows with
 fragmentation, so it must never run on the create path.

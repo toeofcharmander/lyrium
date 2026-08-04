@@ -102,4 +102,6 @@ cmake --preset tests-linux32 && cmake --build --preset tests-linux32 && ctest --
 ```
 
 See `CLAUDE.md` for the architecture, the toolchain details, and how to read a
-session log.
+session log, and [docs/design-vs-eluvian.md](docs/design-vs-eluvian.md) for
+diagrams of what changed from the implementation this forked from and why the
+eviction behaviour is safer despite doing less work.
