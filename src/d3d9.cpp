@@ -733,12 +733,20 @@ __declspec(dllexport) ::HRESULT WINAPI IDirect3DDevice9_SetTexture_hook(
 {
     using orig_call_type = OrigFuncType<decltype(&IDirect3DDevice9_SetTexture_hook)>;
 
-    auto *texture = lyrium::unwrap_resettable_texture(pTexture);
-    if (pTexture != nullptr && texture == nullptr)
+    // acquire_bound_texture hands back a reference; SetTexture takes its own, so
+    // ours is released as soon as the call returns.
+    auto *texture = lyrium::acquire_bound_texture(pTexture);
+
+    // A wrapper whose inner texture could not be recreated used to make this
+    // return D3DERR_DEVICELOST, an error the game never asked for and which can
+    // drive it into a reset loop. Binding nothing leaves the draw untextured,
+    // which is survivable and recovers on the next frame.
+    const auto res = reinterpret_cast<orig_call_type>(orig_func)(that, Stage, texture);
+    if (texture != nullptr)
     {
-        return D3DERR_DEVICELOST;
+        texture->Release();
     }
-    return reinterpret_cast<orig_call_type>(orig_func)(that, Stage, texture);
+    return res;
 }
 
 __declspec(dllexport) ::HRESULT WINAPI IDirect3DDevice9_UpdateTexture_hook(
@@ -749,14 +757,33 @@ __declspec(dllexport) ::HRESULT WINAPI IDirect3DDevice9_UpdateTexture_hook(
 {
     using orig_call_type = OrigFuncType<decltype(&IDirect3DDevice9_UpdateTexture_hook)>;
 
-    auto *source = lyrium::unwrap_resettable_texture(pSourceTexture);
-    auto *destination = lyrium::unwrap_resettable_texture(pDestinationTexture);
+    auto *source = lyrium::acquire_bound_texture(pSourceTexture);
+    auto *destination = lyrium::acquire_bound_texture(pDestinationTexture);
+
+    const auto release = [](::IDirect3DBaseTexture9 *texture) {
+        if (texture != nullptr)
+        {
+            texture->Release();
+        }
+    };
+
+    // A wrapper resolves to nothing only when it is already being destroyed or
+    // when its inner texture could not be recreated under memory pressure. In
+    // both cases the update has nowhere useful to go, and the shadow copy will
+    // be re-uploaded on the next restore. Reporting a device loss the game never
+    // caused is worse than skipping a copy it will not miss.
     if ((pSourceTexture != nullptr && source == nullptr) ||
         (pDestinationTexture != nullptr && destination == nullptr))
     {
-        return D3DERR_DEVICELOST;
+        release(source);
+        release(destination);
+        return D3D_OK;
     }
-    return reinterpret_cast<orig_call_type>(orig_func)(that, source, destination);
+
+    const auto res = reinterpret_cast<orig_call_type>(orig_func)(that, source, destination);
+    release(source);
+    release(destination);
+    return res;
 }
 
 __declspec(dllexport) ::HRESULT WINAPI IDirect3DDevice9_CreateCubeTexture_hook(

@@ -422,13 +422,20 @@ class ResettableTexture final : public ::IDirect3DTexture9
         return inner_;
     }
 
-    auto inner_for_binding() -> ::IDirect3DBaseTexture9 *
+    // Takes a reference while holding the lock, so the returned pointer cannot
+    // be released by a concurrent reset before the caller has used it.
+    auto acquire_inner_for_binding() -> ::IDirect3DBaseTexture9 *
     {
         if (!ensure_inner())
         {
             return nullptr;
         }
+
         auto lock = std::scoped_lock{inner_mutex_};
+        if (inner_ != nullptr)
+        {
+            inner_->AddRef();
+        }
         return inner_;
     }
 
@@ -950,7 +957,7 @@ auto make_resettable_texture(
     return ResettableTexture::create(device, create_texture, texture, shape, destroyed);
 }
 
-auto unwrap_resettable_texture(::IDirect3DBaseTexture9 *texture) -> ::IDirect3DBaseTexture9 *
+auto acquire_bound_texture(::IDirect3DBaseTexture9 *texture) -> ::IDirect3DBaseTexture9 *
 {
     if (texture == nullptr)
     {
@@ -961,12 +968,26 @@ auto unwrap_resettable_texture(::IDirect3DBaseTexture9 *texture) -> ::IDirect3DB
     {
         auto lock = std::scoped_lock{registry_mutex};
         const auto found = registered_textures.find(reinterpret_cast<ResettableTexture *>(texture));
-        if (found != registered_textures.end())
+        // try_add_ref rather than AddRef: an entry stays in this set until the
+        // destructor removes it, which is after the count has already reached
+        // zero, so a plain AddRef here could resurrect a dying wrapper.
+        if (found != registered_textures.end() && (*found)->try_add_ref())
         {
             resettable = *found;
         }
     }
-    return resettable != nullptr ? resettable->inner_for_binding() : texture;
+
+    if (resettable == nullptr)
+    {
+        // Not one of ours. Take a reference anyway so the caller's Release is
+        // balanced whichever branch was taken.
+        texture->AddRef();
+        return texture;
+    }
+
+    auto *inner = resettable->acquire_inner_for_binding();
+    resettable->Release();
+    return inner;
 }
 
 auto rewrap_resettable_texture(::IDirect3DBaseTexture9 *texture) -> ::IDirect3DBaseTexture9 *
