@@ -46,4 +46,5 @@ lyrium_add_test(block_rect_test SOURCES unit/block_rect_test.cpp)
 lyrium_add_test(texture_desc_test SOURCES unit/texture_desc_test.cpp)
 lyrium_add_test(texture_placement_policy_test SOURCES unit/texture_placement_policy_test.cpp)
 lyrium_add_test(texture_ledger_test SOURCES unit/texture_ledger_test.cpp)
+lyrium_add_test(rescue_policy_test SOURCES unit/rescue_policy_test.cpp)
 
