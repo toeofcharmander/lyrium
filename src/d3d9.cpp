@@ -147,7 +147,15 @@ auto rescue_coordinator() -> lyrium::policy::RescueCoordinator &;
 // diagnose after the fact.
 auto log_ledger_snapshot(std::string_view reason, const lyrium::diag::VaStats &) -> void
 {
-    const auto totals = lyrium::texture_ledger().totals();
+    auto totals = lyrium::texture::TextureTotals{};
+    if (!lyrium::texture_ledger().try_totals(totals))
+    {
+        // Declining is correct here rather than waiting: on the exit path the
+        // holder may be a thread ExitProcess already terminated.
+        lyrium::log("textures[{}]: unavailable, ledger busy", reason);
+        return;
+    }
+
 
     lyrium::log(
         "textures[{}]: live={} bytes={} peak={} released={} default={} managed={} systemmem={} scratch={} "
@@ -1147,6 +1155,25 @@ extern "C"
     {
         case DLL_PROCESS_DETACH:
         {
+            // This runs for BOTH detach cases, deliberately. reserved != nullptr
+            // means process termination, which for a statically imported proxy
+            // like this one is the only case that ever actually happens -- so
+            // putting the work behind the early break would mean it never ran.
+            //
+            // Every breadcrumb below opens, appends and closes its own file, so
+            // it shares no state with any terminated thread. If the exit sequence
+            // hangs, the last breadcrumb names the statement it hung on.
+            if (lyrium::log_is_enabled())
+            {
+                lyrium::breadcrumb("detach: sealing log");
+                lyrium::detail::LogSink::instance().begin_seal();
+
+                lyrium::breadcrumb("detach: final sample");
+                lyrium::diag::Sampler::instance().sample_now("shutdown");
+
+                lyrium::breadcrumb("detach: sealed");
+                lyrium::detail::LogSink::instance().end_seal();
+            }
 
             if (reserved != nullptr)
             {

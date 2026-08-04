@@ -88,6 +88,41 @@ class LogSink
         push(std::move(line), true);
     }
 
+    // Called only from DLL_PROCESS_DETACH, on the exiting thread.
+    //
+    // These take no lock, and that is deliberate rather than sloppy. By this
+    // point ExitProcess has terminated every other thread, including this sink's
+    // writer, so single-threadedness is what makes the access defined -- there is
+    // no one left to race with. Taking the lock would be worse than useless: the
+    // writer may have been killed owning it, and nobody remains to release it.
+    auto begin_seal() -> void
+    {
+        sealing_.store(true, std::memory_order_release);
+
+        // Whatever the writer had in flight when it died, then whatever was
+        // queued behind it, oldest batch first.
+        for (auto i = draining_written_; i < draining_.size(); ++i)
+        {
+            write_direct(draining_[i].text, draining_[i].is_event);
+        }
+        for (const auto &line : pending_)
+        {
+            write_direct(line.text, line.is_event);
+        }
+        draining_.clear();
+        pending_.clear();
+        flush_direct();
+    }
+
+    auto end_seal() -> void
+    {
+        const auto dropped = dropped_.load(std::memory_order_relaxed);
+        auto marker = std::string{"lyrium: log sealed, dropped="};
+        marker += std::to_string(dropped);
+        write_direct(marker, false);
+        flush_direct();
+    }
+
     auto push_text(std::string &&line) -> void
     {
         {
@@ -143,6 +178,14 @@ class LogSink
             return;
         }
 
+        // Once sealing, the writer thread no longer exists and the queue will
+        // never be drained again, so go straight to the stream.
+        if (sealing_.load(std::memory_order_acquire))
+        {
+            write_direct(line, is_event);
+            return;
+        }
+
         {
             auto lock = std::scoped_lock{mutex_};
             if (pending_.size() >= queue_limit)
@@ -172,6 +215,28 @@ class LogSink
         }
     }
 
+    auto write_direct(std::string_view line, bool is_event) -> void
+    {
+        auto &stream = is_event ? events_ : text_;
+        if (stream)
+        {
+            stream.write(line.data(), static_cast<std::streamsize>(line.size()));
+            stream.put('\n');
+        }
+    }
+
+    auto flush_direct() -> void
+    {
+        if (events_)
+        {
+            events_.flush();
+        }
+        if (text_)
+        {
+            text_.flush();
+        }
+    }
+
     auto drain_locked() -> void
     {
         if (pending_.empty())
@@ -180,6 +245,7 @@ class LogSink
         }
 
         std::swap(pending_, draining_);
+        draining_written_ = 0u;
         for (const auto &line : draining_)
         {
             auto &stream = line.is_event ? events_ : text_;
@@ -188,8 +254,12 @@ class LogSink
                 stream.write(line.text.data(), static_cast<std::streamsize>(line.text.size()));
                 stream.put('\n');
             }
+            // Advanced as we go, so that if this thread is terminated part way
+            // through, the seal can emit exactly the remainder.
+            ++draining_written_;
         }
         draining_.clear();
+        draining_written_ = 0u;
     }
 
     static constexpr auto queue_limit = std::size_t{16384};
@@ -206,6 +276,8 @@ class LogSink
     std::ofstream text_;
     std::filesystem::path directory_;
     std::atomic<std::uint64_t> dropped_{};
+    std::atomic<bool> sealing_{false};
+    std::size_t draining_written_{};
     bool running_{false};
 };
 

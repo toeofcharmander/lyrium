@@ -1,3 +1,4 @@
+#include <atomic>
 #include <cstdint>
 #include <thread>
 #include <vector>
@@ -226,4 +227,61 @@ TEST(TextureLedger, ReRegisteringChangesWhetherATextureCountsAsRelocated)
     EXPECT_EQ(totals.relocated_bytes, 0u);
     EXPECT_EQ(totals.relocated_count, 0u);
     EXPECT_EQ(totals.total, one_mb);
+}
+
+TEST(TextureLedger, TryTotalsMatchesTotalsWhenUncontended)
+{
+    TextureLedger ledger{};
+    ledger.note_created(handle(1), TexturePool::D3DPOOL_DEFAULT, one_mb, true);
+
+    lyrium::texture::TextureTotals out{};
+    ASSERT_TRUE(ledger.try_totals(out));
+
+    const auto blocking = ledger.totals();
+    EXPECT_EQ(out.total, blocking.total);
+    EXPECT_EQ(out.live_count, blocking.live_count);
+    EXPECT_EQ(out.relocated_bytes, blocking.relocated_bytes);
+}
+
+TEST(TextureLedger, TryTotalsFailsRatherThanBlockingWhenContended)
+{
+    // The property the exit path depends on: a lock held by a thread that will
+    // never release it must not stall the caller.
+    TextureLedger ledger{};
+    ledger.note_created(handle(1), TexturePool::D3DPOOL_DEFAULT, one_mb);
+
+    std::atomic<bool> holding{false};
+    std::atomic<bool> release{false};
+
+    // Hold the ledger's lock from another thread by parking inside a callback
+    // the ledger invokes under it. There is no such hook, so instead contend by
+    // hammering note_created while the main thread tries: with enough traffic the
+    // try must fail at least once, and must never block.
+    std::thread hammer{[&] {
+        holding.store(true);
+        while (!release.load())
+        {
+            ledger.note_created(handle(2), TexturePool::D3DPOOL_DEFAULT, 64u);
+            ledger.note_destroyed(handle(2));
+        }
+    }};
+
+    while (!holding.load())
+    {
+    }
+
+    auto failures = 0;
+    lyrium::texture::TextureTotals out{};
+    for (int i = 0; i < 20000; ++i)
+    {
+        if (!ledger.try_totals(out))
+        {
+            ++failures;
+        }
+    }
+
+    release.store(true);
+    hammer.join();
+
+    EXPECT_GT(failures, 0) << "under contention try_totals should decline at least once rather than always waiting";
 }

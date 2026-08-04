@@ -123,10 +123,30 @@ class BasicTextureLedger
         return records_.contains(texture);
     }
 
+    // Non-blocking read. Used on the exit path, where a lock held by a thread
+    // ExitProcess has already terminated would never be released. Also better on
+    // the normal path: the sampler thread no longer stalls behind a render-thread
+    // texture create.
+    [[nodiscard]] auto try_totals(TextureTotals &out) const -> bool
+    {
+        const auto lock = std::unique_lock{mutex_, std::try_to_lock};
+        if (!lock.owns_lock())
+        {
+            return false;
+        }
+        out = snapshot_locked();
+        return true;
+    }
+
     [[nodiscard]] auto totals() const -> TextureTotals
     {
         const auto lock = std::scoped_lock{mutex_};
+        return snapshot_locked();
+    }
 
+  private:
+    [[nodiscard]] auto snapshot_locked() const -> TextureTotals
+    {
         auto out = TextureTotals{};
         out.by_pool = by_pool_;
         out.total = total_;
@@ -138,7 +158,6 @@ class BasicTextureLedger
         return out;
     }
 
-  private:
     struct Record
     {
         TexturePool pool{};
