@@ -15,7 +15,23 @@ struct EngineConfig
     std::size_t allocation_log_threshold{256u * 1024u};
 };
 
+// What the install gate decided. aborted means verification failed and the
+// process was left completely unmodified.
+struct InstallState
+{
+    std::size_t planned{};
+    std::size_t installed{};
+    std::size_t failed_verification{};
+    std::size_t failed_commit{};
+    std::intptr_t base_delta{};
+    bool aborted{};
+};
+
 auto install_engine_hooks(const EngineConfig &config) -> void;
+auto engine_install_state() -> InstallState;
+
+// Read-only verification of every non-optional target. Safe from DllMain.
+auto targets_verify_clean() -> bool;
 auto remove_engine_hooks() -> void;
 
 auto emergency_evict(int max_count) -> int;

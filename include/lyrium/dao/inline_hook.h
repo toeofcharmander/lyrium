@@ -109,9 +109,114 @@ class ThreadFreezer
     bool failed_{false};
 };
 
+inline constexpr auto no_mismatch = std::size_t{0xFFFFFFFFu};
+
+// What verification found. Fixed-size so producing one allocates nothing, which
+// matters because this eventually has to run at process attach.
+struct VerifyReport
+{
+    const char *name{""};
+    const char *symbol{""};
+    std::uintptr_t site{};
+    std::size_t patch_len{};
+    bool relocated{};
+
+    bool readable{};
+    bool prologue_matched{};
+    bool body_checked{};
+    bool body_matched{};
+
+    std::size_t first_mismatch{no_mismatch};
+    std::array<std::uint8_t, prologue_bytes> found{};
+    std::array<std::uint8_t, prologue_bytes> expected{};
+    std::array<char, 65> computed_hash{};
+    const char *table_hash{""};
+
+    [[nodiscard]] auto ok() const -> bool
+    {
+        return readable && prologue_matched && body_matched;
+    }
+
+    [[nodiscard]] auto reason() const -> const char *
+    {
+        if (!readable)
+        {
+            return "site not readable";
+        }
+        if (!prologue_matched)
+        {
+            return "prologue bytes differ";
+        }
+        if (!body_matched)
+        {
+            return "function body hash differs";
+        }
+        return "verified";
+    }
+};
+
 class InlineHook
 {
   public:
+    // Read-only verification producing a report the caller can act on and print.
+    // Everything below used to be computed and then discarded by an unadorned
+    // `return false`, which is why a version mismatch produced no evidence.
+    static auto verify_target(const Target &target, std::intptr_t base_delta) -> VerifyReport
+    {
+        auto report = VerifyReport{};
+        report.name = target.name;
+        report.table_hash = target.sha256;
+        report.symbol = target.symbol;
+        report.site = target.address + static_cast<std::uintptr_t>(base_delta);
+        report.relocated = base_delta != 0;
+        report.patch_len = target.patch_len;
+
+        const auto *site = reinterpret_cast<const std::uint8_t *>(report.site);
+        if (!readable(site, target.size))
+        {
+            return report;
+        }
+        report.readable = true;
+
+        for (auto i = std::size_t{0}; i < target.patch_len && i < prologue_bytes; ++i)
+        {
+            report.found[i] = site[i];
+            report.expected[i] = target.prologue[i];
+
+            const auto is_relocatable = (target.reloc_mask & (1u << i)) != 0u;
+            if (report.relocated && is_relocatable)
+            {
+                continue;
+            }
+            if (site[i] != target.prologue[i] && report.first_mismatch == no_mismatch)
+            {
+                report.first_mismatch = i;
+            }
+        }
+        report.prologue_matched = report.first_mismatch == no_mismatch;
+
+        // The body hash only means anything at the preferred base, because the
+        // bodies contain absolute operands that shift on rebase. It is computed
+        // regardless and carried in the report, since a hash to compare against a
+        // known dump is the most useful thing to have when a build differs.
+        if (!report.relocated)
+        {
+            const auto hash = Sha256::hex(site, target.size);
+            for (std::size_t i = 0u; i < hash.size() && i + 1u < report.computed_hash.size(); ++i)
+            {
+                report.computed_hash[i] = hash[i];
+            }
+            report.body_checked = true;
+            report.body_matched = hash == target.sha256;
+        }
+        else
+        {
+            report.body_matched = true;
+        }
+
+        return report;
+    }
+
     enum class Status
     {
         not_installed,

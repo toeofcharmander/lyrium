@@ -1091,6 +1091,25 @@ extern "C"
         lyrium::dao::install_engine_hooks(config.engine);
         lyrium::breadcrumb("Direct3DCreate9: engine hooks installed");
 
+        if (const auto install = lyrium::dao::engine_install_state(); install.aborted)
+        {
+            // Loud on purpose. A verification abort means the executable does not
+            // match the table, so the mod is inert; without saying so the user
+            // sees a game that simply behaves as though lyrium were not there.
+            lyrium::log(
+                "engine hooks: ABORTED - {} of {} targets did not verify, the process was left unmodified",
+                install.failed_verification,
+                install.planned);
+        }
+        else
+        {
+            lyrium::log(
+                "engine hooks: {} of {} installed (base_delta={:#x})",
+                install.installed,
+                install.planned,
+                static_cast<std::uint32_t>(install.base_delta));
+        }
+
         lyrium::diag::Sampler::instance().set_observer(&log_ledger_snapshot);
     lyrium::diag::Sampler::instance().start(config.sample_interval_ms);
         lyrium::breadcrumb("Direct3DCreate9: sampler started");
@@ -1139,7 +1158,20 @@ extern "C"
         }
         case DLL_PROCESS_ATTACH:
         {
-            pool_patch_result = lyrium::dao::patch_main_pool(main_pool_override_bytes());
+            // The pool patch and the compensating hooks used to be decided
+            // independently, at different times: this ran unconditionally at
+            // attach while the hooks were attempted much later and their result
+            // discarded. A shrunk pool with no hooks is strictly worse than not
+            // loading at all, so the patch now defers to the same verification
+            // the hooks will use.
+            if (lyrium::dao::targets_verify_clean())
+            {
+                pool_patch_result = lyrium::dao::patch_main_pool(main_pool_override_bytes());
+            }
+            else
+            {
+                pool_patch_result.reason = "skipped: engine targets did not verify";
+            }
             break;
         }
         case DLL_THREAD_ATTACH:

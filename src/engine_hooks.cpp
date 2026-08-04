@@ -9,6 +9,8 @@
 
 #include <windows.h>
 
+#include "lyrium/containers/string.h"
+#include "lyrium/containers/vector.h"
 #include "lyrium/containers/unordered_map.h"
 #include "lyrium/dao/inline_hook.h"
 #include "lyrium/dao/targets.h"
@@ -522,16 +524,55 @@ LYRIUM_CDECL auto realloc_detour(void *pointer, std::size_t size) -> void *
     return result;
 }
 
-auto install(InlineHook &hook, TargetId id, void *detour) -> void
+InstallState install_state{};
+
+struct Planned
 {
-    const auto &entry = target(id);
-    const auto delta = image_base_delta();
-    hook.install(entry, detour, delta);
-    log(
-        "engine hook {}: {} at {:#010x}",
-        entry.name,
-        InlineHook::status_name(hook.status()),
-        entry.address + static_cast<std::uintptr_t>(delta));
+    InlineHook *hook;
+    TargetId id;
+    void *detour;
+};
+
+auto report_verification(const VerifyReport &report) -> void
+{
+    if (report.ok())
+    {
+        log("engine hook {} ({}): verified at {:#010x}", report.name, report.symbol, report.site);
+        return;
+    }
+
+    // Everything below was already being computed and thrown away, which is why
+    // a mismatched game build produced no evidence at all.
+    log("engine hook {} ({}): {} at {:#010x}", report.name, report.symbol, report.reason(), report.site);
+
+    if (report.readable && !report.prologue_matched)
+    {
+        log("  first difference at byte {}: expected {:#04x}, found {:#04x}",
+            report.first_mismatch,
+            report.expected[report.first_mismatch],
+            report.found[report.first_mismatch]);
+
+        auto expected_hex = String{};
+        auto found_hex = String{};
+        static constexpr auto digits = "0123456789abcdef";
+        for (auto i = std::size_t{0}; i < report.patch_len && i < prologue_bytes; ++i)
+        {
+            expected_hex.push_back(digits[report.expected[i] >> 4]);
+            expected_hex.push_back(digits[report.expected[i] & 0x0Fu]);
+            expected_hex.push_back(' ');
+            found_hex.push_back(digits[report.found[i] >> 4]);
+            found_hex.push_back(digits[report.found[i] & 0x0Fu]);
+            found_hex.push_back(' ');
+        }
+        log("  expected {}", expected_hex.c_str());
+        log("  found    {}", found_hex.c_str());
+    }
+
+    if (report.body_checked && !report.body_matched)
+    {
+        log("  body sha256 computed {}", report.computed_hash.data());
+        log("  body sha256 expected {}", report.table_hash);
+    }
 }
 
 }
@@ -540,39 +581,123 @@ auto install_engine_hooks(const EngineConfig &configuration) -> void
 {
     config = configuration;
 
+    // Plan first. Nothing is written until every target has been verified,
+    // because a partial install is worse than none: the hooks that did land
+    // change engine behaviour while the ones that did not leave the
+    // compensating logic absent, and the old code discarded install()'s result
+    // so nobody could tell which had happened.
+    auto planned = Vector<Planned>{};
+    planned.reserve(13u);
+
     if (config.hook_texture_paths)
     {
-        install(hook_load_texture_file, TargetId::load_texture_file,
-                reinterpret_cast<void *>(&load_texture_file_detour));
-        install(hook_create_texture_cached, TargetId::create_texture_cached,
-                reinterpret_cast<void *>(&create_texture_cached_detour));
-        install(hook_create_texture_registered, TargetId::create_texture_registered,
-                reinterpret_cast<void *>(&create_texture_registered_detour));
-        install(hook_stream_load, TargetId::stream_load, reinterpret_cast<void *>(&stream_load_detour));
-        install(hook_decode_texture_memory, TargetId::decode_texture_memory,
-                reinterpret_cast<void *>(&decode_texture_memory_detour));
-        install(hook_create_texture_2d, TargetId::create_texture_2d_factory,
-                reinterpret_cast<void *>(&create_texture_2d_detour));
-        install(hook_create_texture_from_memory, TargetId::create_texture_from_memory,
-                reinterpret_cast<void *>(&create_texture_from_memory_detour));
-        install(hook_create_volume_from_memory, TargetId::create_volume_from_memory,
-                reinterpret_cast<void *>(&create_volume_from_memory_detour));
+        planned.push_back({&hook_load_texture_file, TargetId::load_texture_file,
+                           reinterpret_cast<void *>(&load_texture_file_detour)});
+        planned.push_back({&hook_create_texture_cached, TargetId::create_texture_cached,
+                           reinterpret_cast<void *>(&create_texture_cached_detour)});
+        planned.push_back({&hook_create_texture_registered, TargetId::create_texture_registered,
+                           reinterpret_cast<void *>(&create_texture_registered_detour)});
+        planned.push_back({&hook_stream_load, TargetId::stream_load,
+                           reinterpret_cast<void *>(&stream_load_detour)});
+        planned.push_back({&hook_decode_texture_memory, TargetId::decode_texture_memory,
+                           reinterpret_cast<void *>(&decode_texture_memory_detour)});
+        planned.push_back({&hook_create_texture_2d, TargetId::create_texture_2d_factory,
+                           reinterpret_cast<void *>(&create_texture_2d_detour)});
+        planned.push_back({&hook_create_texture_from_memory, TargetId::create_texture_from_memory,
+                           reinterpret_cast<void *>(&create_texture_from_memory_detour)});
+        planned.push_back({&hook_create_volume_from_memory, TargetId::create_volume_from_memory,
+                           reinterpret_cast<void *>(&create_volume_from_memory_detour)});
     }
 
     if (config.hook_cache)
     {
-        install(hook_evict, TargetId::texture_cache_evict, reinterpret_cast<void *>(&evict_detour));
-        install(hook_clear, TargetId::texture_cache_clear, reinterpret_cast<void *>(&clear_detour));
+        planned.push_back({&hook_evict, TargetId::texture_cache_evict, reinterpret_cast<void *>(&evict_detour)});
+        planned.push_back({&hook_clear, TargetId::texture_cache_clear, reinterpret_cast<void *>(&clear_detour)});
     }
 
     if (config.hook_allocator)
     {
-        install(hook_malloc, TargetId::crt_malloc, reinterpret_cast<void *>(&malloc_detour));
-        install(hook_free, TargetId::crt_free, reinterpret_cast<void *>(&free_detour));
-        install(hook_realloc, TargetId::crt_realloc, reinterpret_cast<void *>(&realloc_detour));
+        planned.push_back({&hook_malloc, TargetId::crt_malloc, reinterpret_cast<void *>(&malloc_detour)});
+        planned.push_back({&hook_free, TargetId::crt_free, reinterpret_cast<void *>(&free_detour)});
+        planned.push_back({&hook_realloc, TargetId::crt_realloc, reinterpret_cast<void *>(&realloc_detour)});
     }
 
+    const auto delta = image_base_delta();
 
+    // Pass one: read only. Not a single byte of the process is modified here.
+    auto failures = std::size_t{0};
+    for (const auto &entry : planned)
+    {
+        const auto report = InlineHook::verify_target(target(entry.id), delta);
+        report_verification(report);
+        if (!report.ok())
+        {
+            ++failures;
+        }
+    }
+
+    install_state.planned = planned.size();
+    install_state.failed_verification = failures;
+    install_state.base_delta = delta;
+
+    if (failures != 0u)
+    {
+        install_state.aborted = true;
+        log("engine hooks: ABORTED, {} of {} targets failed verification, nothing was patched",
+            failures,
+            planned.size());
+        log("engine hooks: this build of daorigins.exe does not match the table in dao/targets.h");
+        return;
+    }
+
+    // Pass two: commit. Every target verified a moment ago, so a failure here is
+    // a write or protection error rather than a version mismatch.
+    for (const auto &entry : planned)
+    {
+        if (!entry.hook->install(target(entry.id), entry.detour, delta))
+        {
+            ++install_state.failed_commit;
+            log("engine hook {}: commit failed ({})",
+                target(entry.id).name,
+                InlineHook::status_name(entry.hook->status()));
+        }
+        else
+        {
+            ++install_state.installed;
+        }
+    }
+
+    log("engine hooks: {} of {} installed", install_state.installed, planned.size());
+}
+
+auto targets_verify_clean() -> bool
+{
+    // Read-only, allocation-light, and safe to call from DllMain. Used to decide
+    // whether the pool patch may apply at all: shrinking the engine's memory
+    // pool while the hooks meant to compensate never install is strictly worse
+    // than not loading the mod, and those two decisions used to be made
+    // independently at different times.
+    const auto delta = image_base_delta();
+    for (std::size_t i = 0u; i < static_cast<std::size_t>(TargetId::count); ++i)
+    {
+        const auto id = static_cast<TargetId>(i);
+        if (id == TargetId::crt_malloc || id == TargetId::crt_free || id == TargetId::crt_realloc)
+        {
+            // Allocator hooks are opt-in and off by default, so a mismatch there
+            // must not veto everything else.
+            continue;
+        }
+        if (!InlineHook::verify_target(target(id), delta).ok())
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
+auto engine_install_state() -> InstallState
+{
+    return install_state;
 }
 
 auto remove_engine_hooks() -> void
