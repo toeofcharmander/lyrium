@@ -252,14 +252,33 @@ class EngineEvictionBackend final : public lyrium::policy::EvictionBackend
 };
 
 // Deliberately the sampler's cached reading rather than a fresh walk. A full
-// address-space walk was measured at about 6.5 ms, which is 39 percent of a
-// frame at 60 fps, so it cannot happen on the create path.
+// address-space walk was measured between 9 and 20 ms during gameplay, growing
+// with fragmentation, so it can never happen on the create path.
+//
+// Reports the tighter of the two readings. On this large-address-aware build
+// largest_free stays pinned near 2 GB because the space above that line is
+// untouched, while the block below it fell from 577 MB to 153 MB during a short
+// intro playthrough. Taking the smaller value means an unpatched 2 GB install
+// and a patched 4 GB one are both measured by the constraint that actually
+// binds, and errs toward rescuing early rather than never.
 class SamplerFreeSpaceProbe final : public lyrium::policy::FreeSpaceProbe
 {
   public:
     [[nodiscard]] auto largest_free_bytes() const -> std::uint64_t override
     {
-        return lyrium::diag::Sampler::instance().largest_free();
+        const auto &sampler = lyrium::diag::Sampler::instance();
+        const auto anywhere = sampler.largest_free();
+        const auto below_2g = sampler.largest_free_below_2g();
+
+        if (anywhere == 0u)
+        {
+            return below_2g;
+        }
+        if (below_2g == 0u)
+        {
+            return anywhere;
+        }
+        return below_2g < anywhere ? below_2g : anywhere;
     }
 };
 
