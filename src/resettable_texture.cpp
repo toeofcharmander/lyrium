@@ -1,5 +1,6 @@
 #include "lyrium/com/ref_count.h"
 #include "lyrium/texture/level_validity.h"
+#include "lyrium/texture/mip_layout.h"
 #include "lyrium/resettable_texture.h"
 
 #include <algorithm>
@@ -486,14 +487,7 @@ class ResettableTexture final : public ::IDirect3DTexture9
     }
 
   private:
-    struct Layout
-    {
-        std::uint32_t width;
-        std::uint32_t height;
-        std::uint32_t pitch;
-        std::uint32_t rows;
-        std::size_t offset;
-    };
+    using Layout = texture::MipLevel;
 
     struct LockState
     {
@@ -518,31 +512,13 @@ class ResettableTexture final : public ::IDirect3DTexture9
         shape_.levels = texture->GetLevelCount();
         block_bytes_ = diag::format_bits_per_pixel(shape_.format) == 4u ? 8u : 16u;
 
-        auto width = std::max(shape_.width, 1u);
-        auto height = std::max(shape_.height, 1u);
-        auto offset = std::size_t{};
-        layouts_.reserve(shape_.levels);
         locks_.resize(shape_.levels, LockState{.view = nullptr, .flags = 0u});
 
-
-        for (auto level = std::uint32_t{}; level < shape_.levels; ++level)
-        {
-            const auto blocks_x = (width + 3u) / 4u;
-            const auto rows = (height + 3u) / 4u;
-            const auto pitch = blocks_x * block_bytes_;
-            layouts_.push_back(Layout{
-                .width = width,
-                .height = height,
-                .pitch = pitch,
-                .rows = rows,
-                .offset = offset,
-            });
-            offset += static_cast<std::size_t>(pitch) * rows;
-            width = std::max(width / 2u, 1u);
-            height = std::max(height / 2u, 1u);
-        }
-
-        mapping_size_ = offset;
+        // The arithmetic lives in texture/mip_layout.h, where it is tested. It
+        // decides the length of the mapping below and every offset handed back
+        // from LockRect, so it is worth having covered rather than inlined here.
+        mapping_size_ =
+            texture::append_mip_levels(layouts_, shape_.width, shape_.height, shape_.levels, block_bytes_);
         if (mapping_size_ == 0u || mapping_size_ > std::numeric_limits<::SIZE_T>::max())
         {
             return;
