@@ -69,9 +69,12 @@ class FreeListAllocator
     using iterator = Iterator;
     using const_iterator = const iterator;
 
+    // Throws std::invalid_argument when capacity cannot hold the single Node the
+    // free list starts with. Below that threshold `capacity - sizeof(Node)` wraps
+    // and the list advertises most of the address space as free.
     FreeListAllocator(PageAllocator page_allocator, std::size_t capacity)
         : page_allocator_{std::move(page_allocator)}
-        , page_{page_allocator_.allocate(capacity)}
+        , page_{acquire_page(page_allocator_, capacity)}
         , head_{std::ranges::construct_at(reinterpret_cast<Node *>(page_), capacity - sizeof(Node), nullptr)}
     {
     }
@@ -246,6 +249,17 @@ class FreeListAllocator
     }
 
   private:
+    // Validates before taking the page, so a rejected capacity leaks nothing.
+    static auto acquire_page(PageAllocator &page_allocator, std::size_t capacity) -> void *
+    {
+        if (capacity < sizeof(Node))
+        {
+            throw std::invalid_argument{"FreeListAllocator capacity is smaller than one Node"};
+        }
+
+        return page_allocator.allocate(capacity);
+    }
+
     [[no_unique_address]] PageAllocator page_allocator_;
     void *page_;
     Node *head_;

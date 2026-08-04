@@ -1,5 +1,6 @@
 #include <cstddef>
 #include <new>
+#include <stdexcept>
 #include <type_traits>
 #include <utility>
 #include <vector>
@@ -92,6 +93,27 @@ TEST(FreeListOwnership, MoveAssignmentReleasesBothPagesExactlyOnce)
 
     EXPECT_EQ(ledger.allocations(), 2u);
     EXPECT_EQ(ledger.releases(), 2u) << "the target's own page must be released, and the moved-from one must not be";
+}
+
+// Regression: the constructor computed the first node's size as
+// `capacity - sizeof(Node)` with no guard, so a capacity below that threshold
+// wrapped and the free list advertised close to four gigabytes of free space
+// inside a page of a few bytes. An allocator that can never serve a request is an
+// illegal state, so it is rejected at construction rather than allowed to exist.
+TEST(FreeListOwnership, RejectsACapacityTooSmallForOneNode)
+{
+    PageLedger ledger{};
+
+    EXPECT_THROW((Allocator{TrackingPages{ledger}, sizeof(Node) - 1u}), std::invalid_argument);
+    EXPECT_THROW((Allocator{TrackingPages{ledger}, 0u}), std::invalid_argument);
+
+    EXPECT_EQ(ledger.allocations(), 0u) << "a rejected capacity must not take a page before failing";
+}
+
+TEST(FreeListOwnership, AcceptsTheSmallestCapacityThatHoldsANode)
+{
+    PageLedger ledger{};
+    EXPECT_NO_THROW((Allocator{TrackingPages{ledger}, sizeof(Node)}));
 }
 
 TEST(FreeListOwnership, AMovedToAllocatorStillOwnsAUsableFreeList)
