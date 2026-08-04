@@ -91,17 +91,28 @@ logging=1
 overlay=1
 ```
 
-**Config trap:** every key is parsed section-blind by `load_config()` except
-`main_pool_mb`, which `d3d9.cpp` reads with `GetPrivateProfileIntA` and which
-therefore requires a literal `[lyrium]` section header. Without it the pool patch
-silently logs `disabled` and that mechanism never runs. Two parsers, two
-incompatible formats, no warning.
+**Config traps**, all pinned by tests in `config_parse_test.cpp`: every key is
+parsed section-blind by `load_config()` except `main_pool_mb`, which `d3d9.cpp`
+reads with `GetPrivateProfileIntA` and which therefore needs a literal
+`[lyrium]` section header. A comment marker is stripped from anywhere in a line
+including inside a value. A malformed number becomes zero rather than falling
+back to the default, so `recycler_budget_mb=abc` disables the recycler. And
+`Config::overlay` is declared `true` while the parser passes a fallback of
+`false`, so an absent key gives the opposite of the declared default.
 
-Verified baseline on the GOG Ultimate Edition: overlay renders, main menu reached,
-and all ten engine hooks report `installed` at their preferred addresses with
-`base_delta == 0`. Because there is no relocation, the SHA-256 body check actually
+A healthy session ends with `va[shutdown]`, `textures[shutdown]`,
+`rescue[shutdown]` and then `lyrium: log sealed`. **If those are missing the game
+did not exit normally**, which is the one thing a log could not previously tell
+you. `lyrium_breadcrumbs.txt` should end with `detach: sealed`; if it ends
+earlier, the last breadcrumb names the statement that hung.
+
+Verified baseline on the GOG Ultimate Edition: overlay renders, all ten engine
+hooks report `installed` at their preferred addresses with `base_delta == 0`, and
+the executable is large-address-aware so it has ~4 GB rather than the 2 GB the
+README assumes. Because there is no relocation, the SHA-256 body check actually
 executes, so `dao/targets.h` is verified against that binary rather than assumed
-to match it.
+to match it. Note a full address-space walk costs 6-20 ms and grows with
+fragmentation, so it must never run on the create path.
 
 ## Architecture
 
@@ -111,12 +122,27 @@ the DLL: `src/d3d9.cpp` (proxy entry point and D3D hooks), `src/overlay.cpp`
 (ImGui overlay), `src/engine_hooks.cpp` (engine-side hooks), and
 `src/resettable_texture.cpp`.
 
-Load path: `DllMain` at `DLL_PROCESS_ATTACH` patches the size immediate of the
-engine's main memory pool reservation (`dao/pool_patch.h`, hard-coded site in
-`daorigins.exe`) to reclaim address space. The exported `Direct3DCreate9` then
-loads the real system `d3d9.dll`, forwards the call, and hooks COM interfaces by
-vtable slot (`hooks/com_hook.h`): first `IDirect3D9::CreateDevice`, then device
-methods (CreateTexture, Lock, SetTexture, Reset, ...).
+Load path: `DllMain` at `DLL_PROCESS_ATTACH` verifies every engine target
+read-only and, only if all of them match, patches the size immediate of the
+engine's main memory pool reservation (`dao/pool_patch.h`). The exported
+`Direct3DCreate9` then loads the real system `d3d9.dll`, forwards the call, and
+hooks COM interfaces by vtable slot (`hooks/com_hook.h`): first
+`IDirect3D9::CreateDevice`, then device methods.
+
+**Policy is separated from mechanism.** The decisions live in portable headers
+that name no D3D or Windows type, so they compile and are tested on Linux:
+`policy/texture_placement_policy.h` decides which pool a texture uses,
+`policy/rescue_policy.h` decides when and how hard to evict, and
+`policy/rescue_coordinator.h` executes plans through abstract seams. The D3D
+hooks convert at the boundary and contain no decisions of their own.
+
+**Exit is deliberately destructor-free.** Objects with static storage duration
+are never destroyed (`never_destroyed.h`); objects with automatic or dynamic
+duration keep their destructors unchanged. This is not laziness: static
+destructors run after `DllMain` under the loader lock with every other thread
+already terminated by `ExitProcess`, so a mutex a dead thread was holding is
+held forever and anything that waits on it deadlocks inside the loader. The log
+is sealed explicitly at detach instead, on the exiting thread, taking no locks.
 
 The main mechanisms, each mostly independent:
 
