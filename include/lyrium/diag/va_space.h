@@ -9,6 +9,7 @@
 #include <psapi.h>
 #include <windows.h>
 
+#include "lyrium/diag/va_region.h"
 #include "lyrium/log.h"
 
 namespace lyrium::diag
@@ -74,7 +75,6 @@ inline auto sample_va() -> VaStats
 
     const auto *cursor = static_cast<const std::byte *>(system_info.lpMinimumApplicationAddress);
     const auto *ceiling = static_cast<const std::byte *>(system_info.lpMaximumApplicationAddress);
-    static constexpr auto two_gigabytes = std::uintptr_t{0x80000000u};
 
     auto info = ::MEMORY_BASIC_INFORMATION{};
     while (cursor < ceiling && ::VirtualQuery(cursor, &info, sizeof(info)) != 0)
@@ -92,14 +92,11 @@ inline auto sample_va() -> VaStats
                 stats.largest_free = size;
             }
 
-            const auto base = reinterpret_cast<std::uintptr_t>(info.BaseAddress);
-            if (base < two_gigabytes)
+            const auto usable =
+                usable_below_2g(static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(info.BaseAddress)), size);
+            if (usable > stats.largest_free_below_2g)
             {
-                const auto usable = std::min<std::uint64_t>(size, two_gigabytes - base);
-                if (usable > stats.largest_free_below_2g)
-                {
-                    stats.largest_free_below_2g = usable;
-                }
+                stats.largest_free_below_2g = usable;
             }
 
             for (auto i = std::size_t{0}; i < bucket_thresholds.size(); ++i)
@@ -152,7 +149,10 @@ inline auto sample_va() -> VaStats
         }
 
         const auto *next = static_cast<const std::byte *>(info.BaseAddress) + info.RegionSize;
-        if (next <= cursor)
+        if (walk_stalled(
+                static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(cursor)),
+                static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(info.BaseAddress)),
+                size))
         {
             break;
         }

@@ -10,6 +10,7 @@
 
 #include <d3d9.h>
 
+#include "lyrium/diag/va_region.h"
 #include "lyrium/texture/texture_desc.h"
 
 // 1. The raw value list, used by both the shim and the PixelFormat enum.
@@ -56,3 +57,15 @@ static_assert(
     lyrium::texture::usage::not_relocatable.bits ==
         (D3DUSAGE_RENDERTARGET | D3DUSAGE_DEPTHSTENCIL | D3DUSAGE_DYNAMIC | D3DUSAGE_AUTOGENMIPMAP),
     "the disqualifying usage set must match the mask used by the live CreateTexture hook");
+
+// 4. The address-space region constants mirrored in diag/va_region.h so that the
+//    classification can be tested without windows.h. A wrong value here would
+//    misclassify free memory as committed, which is the number the rescue policy
+//    reads.
+static_assert(static_cast<unsigned>(lyrium::diag::RegionState::committed) == MEM_COMMIT);
+static_assert(static_cast<unsigned>(lyrium::diag::RegionState::reserved) == MEM_RESERVE);
+static_assert(static_cast<unsigned>(lyrium::diag::RegionState::free) == MEM_FREE);
+
+static_assert(static_cast<unsigned>(lyrium::diag::RegionType::private_memory) == MEM_PRIVATE);
+static_assert(static_cast<unsigned>(lyrium::diag::RegionType::mapped) == MEM_MAPPED);
+static_assert(static_cast<unsigned>(lyrium::diag::RegionType::image) == MEM_IMAGE);
