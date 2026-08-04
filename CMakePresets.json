@@ -1,0 +1,74 @@
+{
+  "version": 3,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 25,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "tests-linux32",
+      "displayName": "Unit tests (32-bit Linux)",
+      "description": "Host-native 32-bit Linux build of the test suite. Needs g++-multilib. Does not need MinGW and does not fetch ImGui.",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/tests-linux32",
+      "toolchainFile": "${sourceDir}/cmake/toolchains/linux-x86-32.cmake",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "LYRIUM_BUILD_TESTS": "ON",
+        "LYRIUM_BUILD_DLL": "OFF"
+      }
+    },
+    {
+      "name": "dll-win32",
+      "displayName": "Shipping d3d9.dll (32-bit Windows)",
+      "description": "winlibs i686 MinGW-w64 GCC build of the proxy DLL. Requires the toolchain bin directory on PATH, or LYRIUM_MINGW32_ROOT set.",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/dll-win32",
+      "toolchainFile": "${sourceDir}/cmake/toolchains/win32-mingw-i686.cmake",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "LYRIUM_BUILD_TESTS": "OFF",
+        "LYRIUM_BUILD_DLL": "ON"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "tests-linux32",
+      "configurePreset": "tests-linux32"
+    },
+    {
+      "name": "dll-win32",
+      "configurePreset": "dll-win32"
+    }
+  ],
+  "testPresets": [
+    {
+      "name": "tests-linux32",
+      "displayName": "All tests expected to pass",
+      "configurePreset": "tests-linux32",
+      "output": {
+        "outputOnFailure": true
+      },
+      "filter": {
+        "exclude": {
+          "label": "known_defect"
+        }
+      }
+    },
+    {
+      "name": "known-defects",
+      "displayName": "Pinned defects (expected to FAIL until fixed)",
+      "configurePreset": "tests-linux32",
+      "output": {
+        "outputOnFailure": false
+      },
+      "filter": {
+        "include": {
+          "label": "known_defect"
+        }
+      }
+    }
+  ]
+}

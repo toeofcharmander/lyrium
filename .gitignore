@@ -25,3 +25,24 @@ sysroot
 imgui.ini
 .gdbinit
 gdb_printers
+
+# --- dual-build layout ------------------------------------------------------
+# build/ above already covers build/tests-linux32 (WSL) and build/dll-win32
+# (Windows). The two must stay in separate directories: the same source tree is
+# configured by two toolchains whose CMakeCache.txt paths are incompatible.
+
+# *.cmake above is a wildcard ignore, so the committed toolchain files have to be
+# re-included explicitly or `git add cmake/toolchains/...` silently does nothing.
+!cmake/toolchains/*.cmake
+
+# CMakePresets.json is committed; per-developer overrides go in the user file.
+CMakeUserPresets.json
+
+# ninja / ctest debris that can land outside build/
+.ninja_deps
+.ninja_log
+DartConfiguration.tcl
+
+# stray copies of the shipping artefact next to the sources
+/d3d9.dll
+/src/d3d9.dll

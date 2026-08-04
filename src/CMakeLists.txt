@@ -1,28 +1,11 @@
-﻿add_library(eluvian INTERFACE)
+# The portable half of the project: a header-only INTERFACE library carrying the
+# include path, the warning set, and the language level. Both the shipping DLL
+# and the test suite consume it, so it must configure without a Windows toolchain.
+add_library(lyrium INTERFACE)
 
-target_include_directories(eluvian INTERFACE ${PROJECT_SOURCE_DIR}/include)
+target_include_directories(lyrium INTERFACE ${PROJECT_SOURCE_DIR}/include)
 
-target_sources(eluvian INTERFACE
-  ${PROJECT_SOURCE_DIR}/include/eluvian/allocators/page_allocator.h
-  ${PROJECT_SOURCE_DIR}/include/eluvian/allocators/free_list_allocator.h
-  ${PROJECT_SOURCE_DIR}/include/eluvian/allocators/global_allocator.h
-  ${PROJECT_SOURCE_DIR}/include/eluvian/hooks/com_hook.h
-  ${PROJECT_SOURCE_DIR}/include/eluvian/config.h
-  ${PROJECT_SOURCE_DIR}/include/eluvian/log.h
-  ${PROJECT_SOURCE_DIR}/include/eluvian/sha256.h
-  ${PROJECT_SOURCE_DIR}/include/eluvian/containers/map.h
-  ${PROJECT_SOURCE_DIR}/include/eluvian/dao/targets.h
-  ${PROJECT_SOURCE_DIR}/include/eluvian/dao/inline_hook.h
-  ${PROJECT_SOURCE_DIR}/include/eluvian/dao/engine_hooks.h
-  ${PROJECT_SOURCE_DIR}/include/eluvian/diag/process_info.h
-  ${PROJECT_SOURCE_DIR}/include/eluvian/diag/sampler.h
-  ${PROJECT_SOURCE_DIR}/include/eluvian/diag/texture_size.h
-  ${PROJECT_SOURCE_DIR}/include/eluvian/diag/va_space.h
-)
-
-install(TARGETS eluvian DESTINATION bin)
-
-target_compile_options(eluvian INTERFACE
+target_compile_options(lyrium INTERFACE
   -Wall
   -Wextra
   -pedantic
@@ -38,16 +21,24 @@ target_compile_options(eluvian INTERFACE
   -Wwrite-strings
   -Wno-cast-function-type
 )
-target_compile_features(eluvian INTERFACE cxx_std_26)
-target_compile_definitions(eluvian INTERFACE -DNOMINMAX)
+target_compile_features(lyrium INTERFACE cxx_std_26)
+target_compile_definitions(lyrium INTERFACE -DNOMINMAX)
 
+# std::print and std::stacktrace live in libstdc++exp on GCC 14+. The probe is
+# what decides whether it is available for the ABI currently being configured.
 include(CheckCXXSourceCompiles)
 set(CMAKE_REQUIRED_LIBRARIES stdc++exp)
-check_cxx_source_compiles("int main() { return 0; }" ELUVIAN_HAVE_STDCXXEXP)
+check_cxx_source_compiles("int main() { return 0; }" LYRIUM_HAVE_STDCXXEXP)
 unset(CMAKE_REQUIRED_LIBRARIES)
-if (ELUVIAN_HAVE_STDCXXEXP)
-  target_link_libraries(eluvian INTERFACE stdc++exp)
+if (LYRIUM_HAVE_STDCXXEXP)
+  target_link_libraries(lyrium INTERFACE stdc++exp)
 endif()
+
+if (NOT LYRIUM_BUILD_DLL)
+  return()
+endif()
+
+install(TARGETS lyrium DESTINATION bin)
 
 add_library(d3d9 SHARED
   d3d9.cpp
@@ -56,6 +47,15 @@ add_library(d3d9 SHARED
   resettable_texture.cpp
   d3d9.def
 )
-target_link_libraries(d3d9 PRIVATE eluvian imguilib dwmapi psapi)
+target_link_libraries(d3d9 PRIVATE lyrium imguilib dwmapi psapi)
 target_compile_options(d3d9 PRIVATE -Wno-microsoft-exception-spec)
+
+# The game loads this DLL by name, so the filename must stay exactly d3d9.dll --
+# PREFIX "" is what stops MinGW emitting libd3d9.dll.
 set_target_properties(d3d9 PROPERTIES PREFIX "")
+
+# The DLL is dropped next to daorigins.exe and must stand alone: no dependency on
+# libstdc++-6.dll, libgcc_s_dw2-1.dll or libwinpthread-1.dll.
+if (LYRIUM_STATIC_RUNTIME)
+  target_link_options(d3d9 PRIVATE -static)
+endif()
