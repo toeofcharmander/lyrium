@@ -152,13 +152,27 @@ TEST(RescuePolicy, UnknownHeadroomCountsAsPressureNotAsSafety)
     EXPECT_TRUE(policy().plan(inputs).acts()) << "an unknown reading must not be read as plenty of room";
 }
 
-TEST(RescuePolicy, SmallRequestsDoNotTriggerOnTheirOwn)
+TEST(RescuePolicy, SmallRequestsDoNotTriggerOnTheirOwnWhileHealthy)
+{
+    auto inputs = healthy();
+    inputs.requested_bytes = 64u;
+    inputs.largest_free_bytes = 512u * mb;
+
+    EXPECT_FALSE(policy().plan(inputs).acts()) << "a 64 byte texture is not worth emptying the cache for";
+}
+
+// This case previously asserted the opposite, and that assertion was the bug.
+// Requiring a large request before even looking at the address space is what let
+// three live sessions fall from 35 MB to 16.5 MB of contiguous space with
+// "request too small to be worth a rescue" recorded on nearly every call. At a
+// megabyte of headroom the size of the request is beside the point.
+TEST(RescuePolicy, ASmallRequestStillTriggersWhenHeadroomIsCritical)
 {
     auto inputs = healthy();
     inputs.requested_bytes = 64u;
     inputs.largest_free_bytes = 1u * mb;
 
-    EXPECT_FALSE(policy().plan(inputs).acts()) << "a 64 byte texture is not worth emptying the cache for";
+    EXPECT_TRUE(policy().plan(inputs).acts()) << "one megabyte of contiguous space is an emergency at any size";
 }
 
 // ---------------------------------------------------------------------------

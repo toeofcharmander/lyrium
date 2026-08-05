@@ -159,7 +159,17 @@ class RescuePolicy
             return idle("engine cache not discovered yet");
         }
 
-        if (inputs.requested_bytes < config_.large_create_bytes)
+        // The size gate applies only while the address space is healthy. It used
+        // to apply unconditionally, and that is what let three sessions die:
+        // "request too small to be worth a rescue" was the recorded reason on
+        // nearly every call while the largest low block fell from 35 MB to
+        // 16.5 MB, because the policy stopped thinking before it ever looked at
+        // the address space. Small creates are precisely what drains it, so once
+        // pressure is established, or headroom is already under the floor, every
+        // request has to keep the ladder turning.
+        const auto below_floor =
+            inputs.largest_free_bytes != 0u && inputs.largest_free_bytes < config_.headroom_floor_bytes;
+        if (!inputs.under_pressure && !below_floor && inputs.requested_bytes < config_.large_create_bytes)
         {
             return idle("request too small to be worth a rescue");
         }

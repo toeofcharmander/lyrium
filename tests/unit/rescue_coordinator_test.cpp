@@ -320,10 +320,11 @@ TEST(RescueCoordinator, RecordsWhyItDeclinedToAct)
     Fixture f{};
     auto coordinator = f.make();
 
-    // Below the floor, but the request is under large_create_bytes, so the policy
-    // idles before it ever evaluates pressure. That is the gate the live log
-    // could not distinguish from having plenty of headroom.
-    f.probe.set(22u * mb);
+    // Healthy headroom and a small request: the policy declines, and the reason
+    // has to say which of the several ways it declined. (A small request while
+    // headroom is under the floor no longer declines at all -- see
+    // ASmallCreateBelowTheFloorStillEntersPressure.)
+    f.probe.set(512u * mb);
     coordinator.consider(64u * 1024u, 0u);
 
     ASSERT_NE(coordinator.stats().last_reason, nullptr);
@@ -399,4 +400,53 @@ TEST(RescueCoordinator, RemembersTheLastActingReasonAcrossLaterIdleCalls)
     coordinator.consider(16u * 1024u, 0u);
 
     EXPECT_STREQ(coordinator.stats().last_action_reason, acting);
+}
+
+// The defect behind three crashed sessions. "request too small to be worth a
+// rescue" was the reason on nearly every call while the largest low block fell
+// from 35 MB to 16.5 MB, because the size gate ran before the policy ever looked
+// at the address space. Small creates are exactly what drains this game's space,
+// so once pressure is established every create has to keep the ladder turning.
+TEST(RescueCoordinator, ASmallCreateUnderEstablishedPressureStillDrivesTheLadder)
+{
+    Fixture f{};
+    auto coordinator = f.make();
+    f.probe.set(20u * mb);
+    f.backend.evict_reclaims_nothing = true;
+
+    ASSERT_TRUE(coordinator.consider(4u * mb, 0u).acted);
+    ASSERT_TRUE(coordinator.stats().under_pressure);
+
+    // Nothing but small creates from here, as in the live session.
+    for (auto i = 0; i < 6; ++i)
+    {
+        f.clock.advance(100'000);
+        coordinator.consider(64u * 1024u, 0u);
+    }
+
+    EXPECT_GT(f.backend.managed_calls + f.backend.clear_calls, 0)
+        << "small creates under pressure left the ladder stuck on its first rung";
+}
+
+// And a collapse that never happens to include a large create must still arm.
+TEST(RescueCoordinator, ASmallCreateBelowTheFloorStillEntersPressure)
+{
+    Fixture f{};
+    auto coordinator = f.make();
+    f.probe.set(16u * mb);
+
+    coordinator.consider(64u * 1024u, 0u);
+
+    EXPECT_TRUE(coordinator.stats().under_pressure);
+}
+
+// The gate still applies in health, so ordinary small creates cost nothing.
+TEST(RescueCoordinator, ASmallCreateWithHealthyHeadroomStillIdlesOutEarly)
+{
+    Fixture f{};
+    auto coordinator = f.make();
+    f.probe.set(512u * mb);
+
+    EXPECT_FALSE(coordinator.consider(64u * 1024u, 0u).acted);
+    EXPECT_FALSE(coordinator.stats().under_pressure);
 }
