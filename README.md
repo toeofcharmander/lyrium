@@ -50,6 +50,17 @@ this: it doubles the space the grinding has to work through, which is why the
 standard advice is to save and restart every couple of hours. A fresh process
 gets a fresh, uncut address space.
 
+What the LAA patch does do, measured rather than assumed, is give Windows
+somewhere else to put things. Allocations are served from the lowest free block
+that fits, so the upper half stays untouched until nothing below fits any more.
+In one instrumented session the largest free block below the 2 GB line fell from
+579 MB to 19.6 MB while the upper half sat at exactly the same figure throughout,
+and only then did the upper half start being used. At the worst point there were
+84.7 MB free below the line in roughly 360 pieces averaging 241 KB, with the
+largest at 8.8 MB — the memory present, in fragments, with no way to combine
+them, which is what fragmentation means in practice. On an unpatched 2 GB install
+there is no upper half to fall back on.
+
 At startup the engine reserves about 795 MB for its own memory pool and roughly
 286 MB goes to module images (DLLs, CUDA, PhysX and so on), leaving around
 229 MB for managed texture duplicates. It does not happen on console, most

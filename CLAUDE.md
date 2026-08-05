@@ -122,6 +122,15 @@ reach it. A normal session on a lightly modded install will never trigger it,
 because the placement policy keeps the address space healthy enough that it is
 not needed -- that is the design working, not a gap in coverage.
 
+Reading a `va[...]` line: `below2g` is the **largest single contiguous block**
+below the 2 GB line, which is what the overlay's headroom bar shows and what
+predicts a failed allocation. `low_total` is how much is free down there in
+total, however scattered. The two together separate the failure modes -- a small
+`below2g` with a large `low_total` is fragmentation, the bytes present in pieces;
+both small means the space is genuinely used up. At the worst point measured,
+`below2g` was 8.8 MB against a `low_total` of 84.7 MB across roughly 360 free
+regions, averaging 241 KB each.
+
 A healthy session ends with `va[shutdown]`, `textures[shutdown]`,
 `rescue[shutdown]` and then `lyrium: log sealed`. **If those are missing the game
 did not exit normally**, which is the one thing a log could not previously tell
@@ -179,14 +188,69 @@ reservation tracking demand rather than a leak. Zero create failures throughout,
 3224 creates. Exactly one sample of 4070 sat below the 32 MB rescue floor, five
 seconds of exposure.
 
-Do not read that trough as a rescue defect without checking the new `headroom=`
-and `last=` fields on the `rescue[...]` line. The policy is correct at those
-values, pinned by `RescueCoordinator.RecordsTheHeadroomItActuallySaw` and the
-trough case in the policy tests; and the probe already reads the *smaller* of
-`largest_free` and `largest_free_below_2g` (`src/d3d9.cpp`), so it is not blind to
-the low block on an LAA install. The likely gate is `large_create_bytes`: a
-request under 1 MB idles before pressure is ever evaluated, and only eighteen
-creates fell inside that five second window.
+Do not read that trough as a rescue defect without checking the `headroom=`,
+`last=` and `acted=` fields on the `rescue[...]` line. The policy is correct at
+those values, pinned by `RescueCoordinator.RecordsTheHeadroomItActuallySaw` and
+the trough case in the policy tests.
+
+**Which free-block figure the rescue is measured against depends on the install**
+(`diag::headroom_bytes`, `include/lyrium/diag/va_region.h`). The probe used to
+take the smaller of `largest_free` and `largest_free_below_2g` on every install.
+On a large-address-aware process that is the wrong constraint: Windows allocates
+bottom-up, serving each reservation from the lowest hole that fits, and serves
+from above the 2 GB line by itself when none does. Measured directly --
+`largest_free` held at exactly 2,146,115,584 while the low block fell from 579 MB
+to 19.6 MB, then stepped down in 21,168,128-byte units as the OS began serving
+from above the line. So on LAA the probe reports the whole space; without LAA
+there is nothing above the line and it reports the low block, unchanged.
+
+Either reading of zero means *unknown* and falls back to the other; both zero
+returns zero, which `is_pressured` treats as pressure rather than as safety.
+
+What that changed, measured on the same install and the same test (Denerim, a
+cutscene, then repeated alt-tabbing):
+
+| | before | after |
+|---|---|---|
+| preemptive rescues | 1 to 51 per session | **0** |
+| rescues the old rule would have armed | -- | **697 and 836** (`avoided=`) |
+| failed texture creates | 0 | **0** |
+| device resets before the crash | 57 | **81, no crash** |
+
+The `avoided=` counter exists to keep this checkable rather than assumed. On a
+2 GB install the two figures are identical, so it stays zero there and the same
+counter validates both branches.
+
+The crash improvement is a hypothesis, not an established consequence: a rescue
+that does not fire does not destroy engine textures, so fewer objects are
+mid-construction during the reset broadcast described below. Plausible, one data
+point.
+
+**The alt-tab crash is a defect in `DAOrigins.exe`, established by disassembly.**
+WER reports `0x0046b1b3` as an offset; the image base is `0x400000` with no ASLR,
+so the faulting address is `0x0086b1b3` -- the return address of an indirect call
+through vtable slot 2, inside `D3DGraphicsDriver::ResetDevice` at `0x0086b030`.
+`D3DResetable`'s abstract vtable at `0x00b2e32c` holds `_purecall` in that slot.
+The engine registers each object into the driver's reset-broadcast registry from
+the `D3DResetable` base constructor and removes it from the base destructor, so
+anything mid-construction or mid-destruction is in the list with the abstract
+vtable still installed when the broadcast calls it. Its `GMutex` is recursive and
+does not prevent re-entry on the same thread, and it discards `Reset`'s HRESULT.
+
+Two landings, one race: **R6025 with the log still sealing** (the CRT's `exit()`
+runs detach) and **silent death with no detach at all** (the loop substitutes an
+uninitialised pointer at `0x00c3a0dc` when the list shrinks underneath it). A
+MinGW-built DLL cannot raise R6025 -- that is MSVC's pure-virtual trap, and this
+game is statically linked MSVC 8 -- so the dialog alone proves the object is the
+game's.
+
+**lyrium cannot fix it, only stop widening the window.** Removing two ~13 ms
+address-space walks from inside the `Reset` hook took the crash from easy to
+reproduce out to 57 resets, and removed a cutscene stutter at the same time.
+Anything running inside that hook holds the engine's driver mutex during the
+broadcast. Do not chase this as a lyrium bug, and do not move work out of `Reset`
+into the draw path -- recreating relocated textures lazily at bind time was tried
+and hung the machine hard enough to need a sign-out.
 
 Walk cost across those samples: **median 15 ms, p90 29 ms, max 205 ms.** It tracks
 region count, so it climbs during load-in and then plateaus with everything else;
