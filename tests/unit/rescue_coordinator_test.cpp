@@ -330,3 +330,73 @@ TEST(RescueCoordinator, RecordsWhyItDeclinedToAct)
     EXPECT_STRNE(coordinator.stats().last_reason, "");
     EXPECT_FALSE(coordinator.stats().under_pressure);
 }
+
+// A live session died at 31 MB of headroom having run exactly one preemptive
+// eviction that released one texture. The ladder never escalated, because
+// escalation is gated on attempt > 0 and attempt only rises when a texture
+// create fails -- and no create failed. The process was killed by a different
+// allocation starving while every texture succeeded. Pressure that survives
+// repeated trims has to escalate on its own.
+TEST(RescueCoordinator, SustainedPressureEscalatesWithoutWaitingForACreateToFail)
+{
+    Fixture f{};
+    auto coordinator = f.make();
+    f.probe.set(20u * mb);
+    f.backend.evict_reclaims_nothing = true;
+
+    for (auto i = 0; i < 6; ++i)
+    {
+        coordinator.consider(4u * mb, 0u);
+        f.clock.advance(100'000);
+    }
+
+    EXPECT_GT(f.backend.managed_calls + f.backend.clear_calls, 0)
+        << "trimming alone never escalated while pressure persisted";
+}
+
+TEST(RescueCoordinator, EscalationResetsAfterPressureIsRelieved)
+{
+    Fixture f{};
+    auto coordinator = f.make();
+    f.probe.set(20u * mb);
+    f.backend.evict_reclaims_nothing = true;
+
+    for (auto i = 0; i < 6; ++i)
+    {
+        coordinator.consider(4u * mb, 0u);
+        f.clock.advance(100'000);
+    }
+    const auto escalated_before = f.backend.clear_calls;
+
+    // Headroom recovers well past the exit multiple, then collapses again.
+    f.probe.set(1024u * mb);
+    coordinator.consider(4u * mb, 0u);
+    f.clock.advance(100'000);
+    ASSERT_FALSE(coordinator.stats().under_pressure);
+
+    f.backend.evict_reclaims_nothing = false;
+    f.probe.set(20u * mb);
+    coordinator.consider(4u * mb, 0u);
+
+    EXPECT_EQ(f.backend.clear_calls, escalated_before) << "a fresh pressure episode must start at the gentlest rung";
+}
+
+// last_reason is overwritten by every call, and the call after a rescue is
+// almost always a small create idling, so the acting decision vanishes from the
+// log immediately. Keep the acting one separately.
+TEST(RescueCoordinator, RemembersTheLastActingReasonAcrossLaterIdleCalls)
+{
+    Fixture f{};
+    auto coordinator = f.make();
+    f.probe.set(20u * mb);
+
+    ASSERT_TRUE(coordinator.consider(4u * mb, 0u).acted);
+    const auto acting = coordinator.stats().last_action_reason;
+    ASSERT_NE(acting, nullptr);
+    EXPECT_STRNE(acting, "");
+
+    // A small create idles out before the pressure test and overwrites last_reason.
+    coordinator.consider(16u * 1024u, 0u);
+
+    EXPECT_STREQ(coordinator.stats().last_action_reason, acting);
+}

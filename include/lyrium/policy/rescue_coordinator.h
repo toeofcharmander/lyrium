@@ -63,6 +63,11 @@ struct RescueStats
     // literal with static storage duration.
     std::uint64_t last_largest_free_bytes{};
     const char *last_reason{""};
+
+    // The reason of the last decision that actually acted. Kept apart from
+    // last_reason because the call right after a rescue is nearly always a small
+    // create idling out, which overwrites it before anything can read it.
+    const char *last_action_reason{""};
 };
 
 // Holds the state a rescue decision needs and executes the resulting plan.
@@ -118,6 +123,7 @@ class RescueCoordinator
             .cache_available = backend_->cache_available(),
             .attempt = attempt,
             .under_pressure = under_pressure_,
+            .consecutive_preemptive = consecutive_preemptive_,
         };
 
         const auto plan = policy_.plan(inputs);
@@ -129,6 +135,7 @@ class RescueCoordinator
         if (plan.leaves_pressure)
         {
             under_pressure_ = false;
+            consecutive_preemptive_ = 0u;
         }
         stats_.under_pressure = under_pressure_;
         stats_.last_largest_free_bytes = inputs.largest_free_bytes;
@@ -144,9 +151,12 @@ class RescueCoordinator
         in_rescue = false;
 
         last_rescue_us_ = inputs.now_us;
+        stats_.last_action_reason = plan.reason;
+
         if (attempt == 0u)
         {
             ++stats_.preemptive;
+            ++consecutive_preemptive_;
         }
         else
         {
@@ -206,6 +216,7 @@ class RescueCoordinator
 
     std::int64_t last_rescue_us_{};
     bool under_pressure_{};
+    std::uint32_t consecutive_preemptive_{};
     RescueStats stats_{};
 };
 

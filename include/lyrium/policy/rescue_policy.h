@@ -59,6 +59,16 @@ struct RescueConfig
     // than the entry condition, so the policy cannot oscillate every frame.
     std::uint32_t pressure_exit_multiple{4u};
 
+    // How many preemptive rescues may run in one pressure episode before the
+    // action strengthens, and before it becomes a full clear. Escalation used to
+    // require attempt > 0, meaning a texture create had to fail first. A live
+    // session died at 31 MB of headroom with all 2596 of its creates succeeding,
+    // so that signal never arrived and the policy trimmed once and stopped.
+    // Pressure that survives repeated trims is itself the evidence that trimming
+    // is not reclaiming enough.
+    std::uint32_t preemptive_escalate_after{2u};
+    std::uint32_t preemptive_clear_after{4u};
+
     // Bounded eviction. The preemptive path takes a batch; the failure path
     // escalates from here and is never bounded away from acting.
     std::int32_t evict_batch{32};
@@ -98,6 +108,10 @@ struct RescueInputs
 
     // Whether the coordinator currently considers the process under pressure.
     bool under_pressure{};
+
+    // Preemptive rescues already run in the current pressure episode. Reset when
+    // pressure is relieved, so a fresh episode starts at the gentlest rung.
+    std::uint32_t consecutive_preemptive{};
 };
 
 struct RescuePlan
@@ -167,6 +181,25 @@ class RescuePolicy
                 return plan;
             }
             return idle("sufficient headroom");
+        }
+
+        if (inputs.consecutive_preemptive >= config_.preemptive_escalate_after)
+        {
+            // Deliberately ahead of the pending_releases gate: with nothing
+            // queued a bounded evict is a no-op, but evicting managed resources
+            // or clearing outright still reclaims, and that is exactly the state
+            // where trimming has already failed to help.
+            const auto clear = inputs.consecutive_preemptive >= config_.preemptive_clear_after;
+            return RescuePlan{
+                .action =
+                    clear ? EvictAction::clear_cache
+                          : (config_.evict_managed ? EvictAction::evict_cache_and_managed : EvictAction::evict_cache),
+                .max_count = batch_for(clear ? 2u : 1u),
+                .enters_pressure = true,
+                .leaves_pressure = false,
+                .reason = clear ? "preemptive: pressure survived repeated eviction, clearing cache"
+                                : "preemptive: pressure sustained, evicting managed resources too",
+            };
         }
 
         if (inputs.pending_releases <= 0)

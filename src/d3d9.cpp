@@ -173,7 +173,7 @@ auto log_ledger_snapshot(std::string_view reason, const lyrium::diag::VaStats &)
     const auto rescue = rescue_coordinator().stats();
     lyrium::log(
         "rescue[{}]: pressure={} preemptive={} on_failure={} evictions={} clears={} managed={} released={} "
-        "suppressed={} headroom={} last={}",
+        "suppressed={} headroom={} last={} acted={}",
         reason,
         rescue.under_pressure,
         rescue.preemptive,
@@ -184,7 +184,8 @@ auto log_ledger_snapshot(std::string_view reason, const lyrium::diag::VaStats &)
         rescue.released_total,
         rescue.suppressed,
         rescue.last_largest_free_bytes,
-        rescue.last_reason);
+        rescue.last_reason,
+        rescue.last_action_reason);
 }
 
 auto enable_allocation_watch() -> void
