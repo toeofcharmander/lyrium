@@ -3,7 +3,7 @@
 The technique that fixes the crash is inherited and unchanged: relocating managed
 textures to the `DEFAULT` pool and backing their CPU-side copy with a
 pagefile-backed file mapping that is only mapped during a lock. That design is
-Matthew's, it is right, and it stays.
+eluvian's, it is right, and it stays.
 
 What was rewritten is everything that decides *when* things run. The case for the
 new behaviour being safer rests on a worst case that is **stronger**, not weaker,
@@ -111,4 +111,4 @@ path itself has been exercised on both a 2 GB and a 4 GB install under heavy mod
 load.
 
 The original diagnosis is Nathan Baggs' (`nathan-baggs/mandrel`) and the core
-implementation is Matthew's (`adarec1994/eluvian`); see the README.
+implementation is eluvian's (`adarec1994/eluvian`); see the README.
