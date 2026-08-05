@@ -531,9 +531,6 @@ class ResettableTexture final : public ::IDirect3DTexture9
         }
     }
 
-    // Deliberately not called after a device reset any more; see
-    // after_resettable_texture_reset. Kept for callers that genuinely need the
-    // texture to exist right now.
     auto restore_inner() -> void
     {
         ensure_inner();
@@ -1109,22 +1106,12 @@ auto before_resettable_texture_reset(::IDirect3DDevice9 *device) -> void
 
 auto after_resettable_texture_reset() -> void
 {
-    // Nothing. Every relocated texture is recreated on first use instead.
-    //
-    // This used to recreate all ~200 of them synchronously, inside the D3D Reset
-    // hook, which runs inside D3DGraphicsDriver::ResetDevice with the engine's
-    // driver mutex held while it broadcasts to a registry that contains
-    // half-constructed objects. That broadcast is the game's pure-virtual race,
-    // and the longer this hook holds the lock the likelier the race is lost. The
-    // address-space walks came out first; this was the largest remaining piece.
-    //
-    // Safe because both paths to the inner texture -- acquire_inner and
-    // acquire_inner_for_binding -- already call ensure_inner, which creates it
-    // when absent and marks every valid level owed, and binding flushes those
-    // levels before handing the pointer over. So a texture is restored exactly
-    // when something first needs it, with its content, and one that is never
-    // drawn again is never recreated at all. Most of a reset's textures are not
-    // drawn in the next frame, so this is work removed rather than merely moved.
+    auto textures = snapshot_textures();
+    for (auto *texture : textures)
+    {
+        texture->restore_inner();
+        texture->Release();
+    }
 }
 
 }
