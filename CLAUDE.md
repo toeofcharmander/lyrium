@@ -125,13 +125,15 @@ The relationship is a threshold, not a slope: 850 -> 768 returns 82 MB of pool
 and gains 108 MB of largest free block. Do not interpolate the table. The values
 are mod-load dependent — this is one heavily modded install.
 
-**Too small is not detectable.** Too large starves the address space and is loud:
+**Too small is not detectable from the log.** Too large starves the address space
+and is loud:
 `E_OUTOFMEMORY`, `failures=` climbing, the rescue arming. Too small starves the
 engine inside its own pool and shows up neither way. At 512 MB one session ran
 `creates=4622 failures=0` with the world visibly missing geometry, and another
 hung during a level load with `creates=744` frozen and 512 MB of contiguous
 headroom. Neither reaches `create_texture_2d`, because the engine allocates pool
-memory for decoded asset data before it ever calls D3D. Bias upward.
+memory for decoded asset data before it ever calls D3D. Both are visible to a
+player and neither is visible to us. Bias upward.
 
 ## The alt-tab crash
 
