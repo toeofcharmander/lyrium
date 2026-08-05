@@ -97,11 +97,12 @@ class Sampler
         // while someone is watching the screen. walk_us is included because the
         // cost of this walk on the render thread is otherwise unmeasured.
         lyrium::log(
-            "va[{}]: largest_free={} below2g={} total_free={} free_regions={} committed_private={} "
-            "available_virtual={} walk_us={}",
+            "va[{}]: largest_free={} below2g={} low_total={} total_free={} free_regions={} "
+            "committed_private={} available_virtual={} walk_us={}",
             reason,
             stats.largest_free,
             stats.largest_free_below_2g,
+            stats.total_free_below_2g,
             stats.total_free,
             stats.free_regions,
             stats.committed_private,

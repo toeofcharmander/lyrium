@@ -21,6 +21,17 @@ struct VaStats
     std::uint64_t largest_free;
     std::uint64_t largest_free_below_2g;
     std::uint64_t total_free;
+
+    // Free bytes below the 2 GB line, however scattered.
+    //
+    // Distinguishes the two ways the low half can be in trouble, which
+    // largest_free_below_2g alone cannot. A small largest block with a large
+    // total means the space is fragmented -- the bytes are there, in pieces. A
+    // small largest block with a small total means it is genuinely used up. The
+    // failure this project exists to prevent is the first; the second is a
+    // different problem with a different answer, and until now the log could not
+    // tell them apart.
+    std::uint64_t total_free_below_2g;
     std::uint64_t total_reserved;
     std::uint64_t committed_private;
     std::uint64_t committed_image;
@@ -88,6 +99,7 @@ inline auto sample_va() -> VaStats
 
             const auto usable =
                 usable_below_2g(static_cast<std::uint64_t>(reinterpret_cast<std::uintptr_t>(info.BaseAddress)), size);
+            stats.total_free_below_2g += usable;
             if (usable > stats.largest_free_below_2g)
             {
                 stats.largest_free_below_2g = usable;
