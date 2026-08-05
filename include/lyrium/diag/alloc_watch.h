@@ -677,7 +677,10 @@ inline auto report_alloc_records(std::string_view reason) -> void
     }
 
     lyrium::log(
-        "alloc[{}]: recorded={} below2g={}/{}kb above2g={}/{}kb largest={}kb@{:#x}",
+        // Deliberately not "below2g", which va[] already uses for a byte count. The
+        // two lines sharing a field name that means different things made a
+        // grep over the logs silently mix counts with bytes.
+        "alloc[{}]: recorded={} low_count={} low_kb={} high_count={} high_kb={} largest_kb={} at={:#x}",
         reason,
         recorded,
         below,
