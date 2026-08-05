@@ -46,3 +46,6 @@ DartConfiguration.tcl
 # stray copies of the shipping artefact next to the sources
 /d3d9.dll
 /src/d3d9.dll
+
+# Release packages, built not tracked
+dist/
