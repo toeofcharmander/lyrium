@@ -19,8 +19,16 @@
 namespace lyrium::diag
 {
 
-inline constexpr auto max_frames = std::size_t{16};
-
+// Records an allocation's size, address and immediate caller. Nothing more.
+//
+// It used to also walk up to sixteen stack frames per recorded allocation. Those
+// frames were written and never read by anything, and the walk ran inside a hook
+// on NtAllocateVirtualMemory -- every virtual allocation in the process -- which
+// made simply enabling allocation_watch reintroduce a cutscene stutter. A
+// diagnostic that changes what it is measuring is worse than no diagnostic.
+//
+// caller is __builtin_return_address(0), one instruction, and one frame is what
+// was actually wanted: enough to name the module responsible.
 struct AllocRecord
 {
     std::uint64_t size;
@@ -29,123 +37,10 @@ struct AllocRecord
     std::uint32_t type;
     std::uint32_t protect;
     std::int64_t stamp_us;
-
-    std::uint32_t frames[max_frames];
-    std::uint32_t frame_count;
 };
 
 namespace detail
 {
-
-inline std::atomic<std::uint32_t> image_low{0};
-inline std::atomic<std::uint32_t> image_high{0};
-
-inline auto note_image_bounds() -> void
-{
-    const auto module = ::GetModuleHandleA(nullptr);
-    if (module == nullptr)
-    {
-        return;
-    }
-    auto info = ::MODULEINFO{};
-    if (::GetModuleInformation(::GetCurrentProcess(), module, &info, sizeof(info)) == 0)
-    {
-        return;
-    }
-    const auto base = reinterpret_cast<std::uintptr_t>(info.lpBaseOfDll);
-    image_low.store(static_cast<std::uint32_t>(base), std::memory_order_relaxed);
-    image_high.store(static_cast<std::uint32_t>(base + info.SizeOfImage), std::memory_order_relaxed);
-}
-
-inline auto collect_frames(std::uint32_t *out, std::uint32_t limit) -> std::uint32_t
-{
-    const auto low = image_low.load(std::memory_order_relaxed);
-    const auto high = image_high.load(std::memory_order_relaxed);
-    if (low == 0u || high == 0u)
-    {
-        return 0u;
-    }
-
-    auto *cursor = reinterpret_cast<const std::uint32_t *>(__builtin_frame_address(0));
-    const auto *stack_top =
-        reinterpret_cast<const std::uint32_t *>(reinterpret_cast<const ::NT_TIB *>(::NtCurrentTeb())->StackBase);
-
-    const auto looks_like_return_address = [low, high](std::uint32_t value)
-    {
-        if (value <= low + 8u || value >= high)
-        {
-            return false;
-        }
-        const auto *bytes = reinterpret_cast<const std::uint8_t *>(value);
-
-        if (bytes[-5] == 0xE8)
-        {
-            return true;
-        }
-        if (bytes[-6] == 0xFF && (bytes[-5] & 0x38) == 0x10)
-        {
-            return true;
-        }
-        if (bytes[-2] == 0xFF && (bytes[-1] & 0xF8) == 0xD0)
-        {
-            return true;
-        }
-        if (bytes[-3] == 0xFF && (bytes[-2] & 0x38) == 0x10)
-        {
-            return true;
-        }
-        return false;
-    };
-
-    static constexpr auto max_words = std::size_t{8192};
-    auto found = std::uint32_t{0};
-    auto previous = std::uint32_t{0};
-    for (std::size_t i = 0; i < max_words && cursor < stack_top && found < limit; ++i, ++cursor)
-    {
-        const auto value = *cursor;
-        if (!looks_like_return_address(value) || value == previous)
-        {
-            continue;
-        }
-        previous = value;
-        out[found++] = value;
-    }
-    return found;
-}
-
-inline constexpr auto max_preexisting = std::size_t{8};
-struct PreexistingRegion
-{
-    std::uint32_t base;
-    std::uint32_t size;
-};
-inline PreexistingRegion preexisting[max_preexisting]{};
-inline std::atomic<std::uint32_t> preexisting_count{};
-
-inline auto snapshot_preexisting(std::uint64_t threshold) -> void
-{
-    auto info = ::MEMORY_BASIC_INFORMATION{};
-    const auto *cursor = static_cast<const std::byte *>(nullptr);
-    auto count = std::uint32_t{0};
-
-    while (count < max_preexisting && ::VirtualQuery(cursor, &info, sizeof(info)) != 0)
-    {
-        if (info.State == MEM_COMMIT && info.Type == MEM_PRIVATE &&
-            static_cast<std::uint64_t>(info.RegionSize) >= threshold)
-        {
-            preexisting[count++] = PreexistingRegion{
-                .base = static_cast<std::uint32_t>(reinterpret_cast<std::uintptr_t>(info.BaseAddress)),
-                .size = static_cast<std::uint32_t>(info.RegionSize)};
-        }
-        const auto *next = static_cast<const std::byte *>(info.BaseAddress) + info.RegionSize;
-        if (next <= cursor)
-        {
-            break;
-        }
-        cursor = next;
-    }
-    preexisting_count.store(count, std::memory_order_relaxed);
-}
 
 inline constexpr auto max_alloc_records = std::size_t{256};
 inline AllocRecord alloc_records[max_alloc_records]{};
@@ -181,10 +76,7 @@ inline auto WINAPI virtual_alloc_detour(::LPVOID address, ::SIZE_T size, ::DWORD
                 .type = allocation_type,
                 .protect = protect,
                 .stamp_us = 0,
-                .frames = {},
-                .frame_count = 0,
             };
-            alloc_records[index].frame_count = collect_frames(alloc_records[index].frames, max_frames);
         }
         else
         {
@@ -234,10 +126,7 @@ inline auto __attribute__((stdcall)) nt_allocate_detour(
                 .type = allocation_type,
                 .protect = protect,
                 .stamp_us = 0,
-                .frames = {},
-                .frame_count = 0,
             };
-            alloc_records[index].frame_count = collect_frames(alloc_records[index].frames, max_frames);
         }
         else
         {
@@ -394,10 +283,7 @@ inline auto __attribute__((cdecl)) malloc_detour(std::size_t size) -> void *
                 .type = malloc_record_marker,
                 .protect = 0u,
                 .stamp_us = 0,
-                .frames = {},
-                .frame_count = 0,
             };
-            alloc_records[index].frame_count = collect_frames(alloc_records[index].frames, max_frames);
         }
         else
         {
@@ -481,7 +367,6 @@ inline auto install_game_malloc_hook(std::uint64_t threshold_bytes) -> bool
 inline auto install_nt_alloc_hook(std::uint64_t threshold_bytes) -> bool
 {
     detail::alloc_watch_threshold.store(threshold_bytes, std::memory_order_relaxed);
-    detail::note_image_bounds();
 
     const auto ntdll = ::GetModuleHandleA("ntdll.dll");
     if (ntdll == nullptr)
