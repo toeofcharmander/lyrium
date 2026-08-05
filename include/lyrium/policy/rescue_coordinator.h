@@ -101,6 +101,18 @@ struct RescueStats
     // unchanged and nothing reads this but the log.
     FreeSpaceShape last_shape{FreeSpaceShape::unknown};
     std::uint64_t largest_request_bytes{};
+
+    // The two figures the verdict was reached from, carried alongside it.
+    //
+    // Without them the verdict invites a false comparison. It is computed when a
+    // texture is created, from the sampler's cached figures, while the va[] line
+    // beside it in the log comes from the walk that has since run -- so it trails
+    // by one sample and reads as though it contradicts its own neighbour. Every
+    // apparent mismatch in a live session turned out to be the previous sample's
+    // number, which took a careful read to establish and would have taken one
+    // again.
+    std::uint64_t last_shape_largest_bytes{};
+    std::uint64_t last_shape_total_bytes{};
 };
 
 // Holds the state a rescue decision needs and executes the resulting plan.
@@ -187,8 +199,10 @@ class RescueCoordinator
         {
             stats_.largest_request_bytes = requested_bytes;
         }
+        stats_.last_shape_largest_bytes = probe_->constrained_largest_free_bytes();
+        stats_.last_shape_total_bytes = inputs.total_free_bytes;
         stats_.last_shape =
-            diagnose(stats_.largest_request_bytes, probe_->constrained_largest_free_bytes(), inputs.total_free_bytes);
+            diagnose(stats_.largest_request_bytes, stats_.last_shape_largest_bytes, stats_.last_shape_total_bytes);
         stats_.last_reason = plan.reason;
 
         if (!plan.acts())
