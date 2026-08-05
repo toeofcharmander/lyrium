@@ -251,14 +251,17 @@ The main mechanisms, each mostly independent:
   prologue bytes, and hooks verify those bytes before patching, so they no-op on an
   unknown game build. Supports "rescue" emergency cache eviction when free VA drops
   below a watermark.
-- **Texture stager** (`texture_stager.h`) -- the core fix from the README: steers
-  texture creation to `D3DPOOL_DEFAULT` (no managed duplicate in the 2 GB space).
-  DEFAULT textures can't be locked, so Lock hands the engine a temporary buffer,
-  and Unlock copies it to the GPU and discards it; the engine can't tell the
-  difference.
-- **Resettable textures** (`resettable_texture.h/.cpp`) -- wraps DEFAULT-pool
-  textures so they survive device `Reset` (resolution/graphics changes), which
-  plain DEFAULT resources do not.
+- **Texture relocation** (`resettable_texture.h/.cpp`) -- the core fix from the
+  README: steers texture creation to `D3DPOOL_DEFAULT` (no managed duplicate in
+  the 2 GB space). DEFAULT textures cannot be locked, so `LockRect` maps a view
+  of a pagefile-backed section and hands the engine a pointer into it; `UnlockRect`
+  records the level as owed and the upload is batched at bind time. The section
+  is inherited from eluvian. What is not inherited is `texture_stager.h`, which
+  eluvian wired into six places in its create path to serve locks from a
+  transient `D3DPOOL_SYSTEMMEM` staging texture; lyrium has no such file and
+  routes every lock through the mapped section instead. The same wrapper is what
+  lets a DEFAULT texture survive device `Reset`, which a plain DEFAULT resource
+  does not.
 - **Texture recycler** (`texture_recycler.h`) -- optional reuse of released
   textures keyed by shape, with a byte budget.
 - **Diagnostics** (`diag/`, `stats.h`, `log.h`, `overlay.*`) -- VA-space and
