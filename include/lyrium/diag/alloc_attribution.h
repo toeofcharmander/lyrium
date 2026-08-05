@@ -27,6 +27,64 @@ namespace lyrium::diag
 
 inline constexpr auto max_alloc_modules = std::size_t{8};
 
+// How many return addresses are captured per record. Enough to step over the
+// allocator layers and reach the client; more would cost stack-walk time for
+// frames nothing reads, which is how the first version of this went wrong.
+inline constexpr auto max_alloc_frames = std::size_t{8};
+
+using FrameModules = std::array<std::uint64_t, max_alloc_frames>;
+
+// The modules that are allocators rather than clients: ntdll, kernel32,
+// kernelbase, with a spare slot. 0 means the slot is unused and matches nothing.
+using AllocatorModules = std::array<std::uint64_t, 4>;
+
+// The module that asked for the allocation, as opposed to the one that made it.
+//
+// A live session resolved all 256 records to ntdll.dll and KERNEL32.DLL, which
+// answers nothing. RtlAllocateHeap and VirtualAlloc are what call
+// NtAllocateVirtualMemory, so there is always at least one allocator frame
+// between the client and the syscall, and the immediate return address can never
+// name the client at that hook site.
+//
+// lyrium is deliberately absent from the allocator list. If our own staging
+// sections turn out to be what cuts the space, that is a finding, not noise.
+//
+// Returns 0 when every frame is an allocator or unresolvable, which reads as
+// "the walk did not reach the client" rather than as an answer.
+[[nodiscard]] constexpr auto requesting_module(
+    const FrameModules &frames,
+    std::uint32_t frame_count,
+    const AllocatorModules &allocators) -> std::uint64_t
+{
+    const auto usable = frame_count < frames.size() ? frame_count : static_cast<std::uint32_t>(frames.size());
+
+    for (auto i = std::uint32_t{0}; i < usable; ++i)
+    {
+        const auto module = frames[i];
+        if (module == 0u)
+        {
+            continue;
+        }
+
+        auto is_allocator = false;
+        for (const auto allocator : allocators)
+        {
+            if (allocator != 0u && allocator == module)
+            {
+                is_allocator = true;
+                break;
+            }
+        }
+
+        if (!is_allocator)
+        {
+            return module;
+        }
+    }
+
+    return 0u;
+}
+
 struct ModuleAllocations
 {
     // 0 means the caller resolved to no module. Kept as a row rather than

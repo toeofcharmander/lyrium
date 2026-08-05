@@ -20,21 +20,36 @@
 namespace lyrium::diag
 {
 
-// Records an allocation's size, address and immediate caller. Nothing more.
+// Records an allocation's size, address and the stack that asked for it.
 //
-// It used to also walk up to sixteen stack frames per recorded allocation. Those
-// frames were written and never read by anything, and the walk ran inside a hook
-// on NtAllocateVirtualMemory -- every virtual allocation in the process -- which
-// made simply enabling allocation_watch reintroduce a cutscene stutter. A
-// diagnostic that changes what it is measuring is worse than no diagnostic.
+// The frame capture has been removed once and restored once, and both moves were
+// made on a wrong reading. It was removed as the cause of a cutscene stutter --
+// but it was already bounded by the same `index < max_alloc_records` guard the
+// record itself is, so it ran at most 256 times in a session and cannot have
+// stuttered anything. What sits on the hot path is the detour, on every
+// NtAllocateVirtualMemory in the process, and that is still here.
 //
-// caller is __builtin_return_address(0), one instruction, and one frame is what
-// was actually wanted: enough to name the module responsible.
+// It was then replaced by a single __builtin_return_address(0), on the reasoning
+// that one frame was enough to name the module. It is not, and cannot be:
+// RtlAllocateHeap and VirtualAlloc are what call NtAllocateVirtualMemory, so
+// there is always at least one allocator frame between the client and the
+// syscall. A live session resolved all 256 records to ntdll.dll and
+// KERNEL32.DLL, which is true and useless.
+//
+// The version before that captured frames and never read them, and filtered them
+// to daorigins.exe's image range -- so an allocation made by d3d9 or by the
+// display driver could not have been found even in principle.
+//
+// So: capture a few frames, only for records that are stored, and actually read
+// them. requesting_module() in alloc_attribution.h steps over the allocator
+// layers to whatever asked.
 struct AllocRecord
 {
     std::uint64_t size;
     std::uint64_t result;
     std::uint64_t caller;
+    std::uint32_t frames[max_alloc_frames];
+    std::uint32_t frame_count;
     std::uint32_t type;
     std::uint32_t protect;
     std::int64_t stamp_us;
@@ -42,6 +57,44 @@ struct AllocRecord
 
 namespace detail
 {
+
+// ntdll's own unwinder, resolved once. Bounded to the records that are stored,
+// so a whole session pays for at most max_alloc_records walks.
+using CaptureBacktraceFn = ::USHORT(NTAPI *)(::ULONG, ::ULONG, void **, ::PULONG);
+inline std::atomic<CaptureBacktraceFn> capture_backtrace{nullptr};
+
+inline auto resolve_capture_backtrace() -> void
+{
+    if (const auto ntdll = ::GetModuleHandleA("ntdll.dll"); ntdll != nullptr)
+    {
+        capture_backtrace.store(
+            reinterpret_cast<CaptureBacktraceFn>(
+                reinterpret_cast<void *>(::GetProcAddress(ntdll, "RtlCaptureStackBackTrace"))),
+            std::memory_order_relaxed);
+    }
+}
+
+// Fills a record's frames. `skip` drops our own detour frame so frame 0 is the
+// allocator that called the syscall rather than us.
+inline auto collect_frames(AllocRecord &record, ::ULONG skip) -> void
+{
+    record.frame_count = 0u;
+
+    const auto capture = capture_backtrace.load(std::memory_order_relaxed);
+    if (capture == nullptr)
+    {
+        return;
+    }
+
+    void *addresses[max_alloc_frames]{};
+    const auto captured = capture(skip, static_cast<::ULONG>(max_alloc_frames), addresses, nullptr);
+
+    for (auto i = ::USHORT{0}; i < captured && i < max_alloc_frames; ++i)
+    {
+        record.frames[i] = static_cast<std::uint32_t>(reinterpret_cast<std::uintptr_t>(addresses[i]));
+    }
+    record.frame_count = captured;
+}
 
 inline constexpr auto max_alloc_records = std::size_t{256};
 inline AllocRecord alloc_records[max_alloc_records]{};
@@ -74,10 +127,17 @@ inline auto WINAPI virtual_alloc_detour(::LPVOID address, ::SIZE_T size, ::DWORD
                 .result = reinterpret_cast<std::uintptr_t>(result),
 
                 .caller = reinterpret_cast<std::uintptr_t>(__builtin_return_address(0)),
+                .frames = {},
+                .frame_count = 0u,
                 .type = allocation_type,
                 .protect = protect,
                 .stamp_us = 0,
             };
+            // Only for records that are kept, so a session pays for at most
+            // max_alloc_records walks however badly it goes. skip=1 drops this
+            // detour's own frame, leaving frame 0 as the allocator that called
+            // the syscall.
+            collect_frames(alloc_records[index], 1u);
         }
         else
         {
@@ -124,10 +184,17 @@ inline auto __attribute__((stdcall)) nt_allocate_detour(
                 .size = size,
                 .result = (base_address != nullptr) ? reinterpret_cast<std::uintptr_t>(*base_address) : 0u,
                 .caller = reinterpret_cast<std::uintptr_t>(__builtin_return_address(0)),
+                .frames = {},
+                .frame_count = 0u,
                 .type = allocation_type,
                 .protect = protect,
                 .stamp_us = 0,
             };
+            // Only for records that are kept, so a session pays for at most
+            // max_alloc_records walks however badly it goes. skip=1 drops this
+            // detour's own frame, leaving frame 0 as the allocator that called
+            // the syscall.
+            collect_frames(alloc_records[index], 1u);
         }
         else
         {
@@ -155,6 +222,7 @@ inline auto recognised_prologue(const std::uint8_t *bytes) -> bool
 inline auto install_virtual_alloc_hook(std::uint64_t threshold_bytes) -> bool
 {
     detail::alloc_watch_threshold.store(threshold_bytes, std::memory_order_relaxed);
+    detail::resolve_capture_backtrace();
 
     auto *target = static_cast<std::uint8_t *>(nullptr);
     if (const auto kernelbase = ::GetModuleHandleA("kernelbase.dll"); kernelbase != nullptr)
@@ -281,10 +349,17 @@ inline auto __attribute__((cdecl)) malloc_detour(std::size_t size) -> void *
                 .result = reinterpret_cast<std::uintptr_t>(result),
 
                 .caller = reinterpret_cast<std::uintptr_t>(__builtin_return_address(0)),
+                .frames = {},
+                .frame_count = 0u,
                 .type = malloc_record_marker,
                 .protect = 0u,
                 .stamp_us = 0,
             };
+            // Only for records that are kept, so a session pays for at most
+            // max_alloc_records walks however badly it goes. skip=1 drops this
+            // detour's own frame, leaving frame 0 as the allocator that called
+            // the syscall.
+            collect_frames(alloc_records[index], 1u);
         }
         else
         {
@@ -301,6 +376,7 @@ inline auto __attribute__((cdecl)) malloc_detour(std::size_t size) -> void *
 inline auto install_game_malloc_hook(std::uint64_t threshold_bytes) -> bool
 {
     detail::alloc_watch_threshold.store(threshold_bytes, std::memory_order_relaxed);
+    detail::resolve_capture_backtrace();
 
     const auto &entry = dao::target(dao::TargetId::crt_malloc);
     const auto module = ::GetModuleHandleA(nullptr);
@@ -368,6 +444,7 @@ inline auto install_game_malloc_hook(std::uint64_t threshold_bytes) -> bool
 inline auto install_nt_alloc_hook(std::uint64_t threshold_bytes) -> bool
 {
     detail::alloc_watch_threshold.store(threshold_bytes, std::memory_order_relaxed);
+    detail::resolve_capture_backtrace();
 
     const auto ntdll = ::GetModuleHandleA("ntdll.dll");
     if (ntdll == nullptr)
@@ -424,6 +501,7 @@ inline auto install_nt_alloc_hook(std::uint64_t threshold_bytes) -> bool
 inline auto install_alloc_watch(std::uint64_t threshold_bytes) -> bool
 {
     detail::alloc_watch_threshold.store(threshold_bytes, std::memory_order_relaxed);
+    detail::resolve_capture_backtrace();
 
     auto *base = reinterpret_cast<std::uint8_t *>(::GetModuleHandleA(nullptr));
     if (base == nullptr)
@@ -570,6 +648,37 @@ inline auto module_name_of(std::uint64_t base) -> std::string
     return slash == std::string::npos ? name : name.substr(slash + 1u);
 }
 
+// The allocator layers a client's request passes through before reaching the
+// syscall. Resolved once at report time, not held across the session, because a
+// module could in principle be unloaded and reloaded elsewhere.
+inline auto allocator_modules() -> AllocatorModules
+{
+    const auto base_of = [](const char *name) -> std::uint64_t
+    { return reinterpret_cast<std::uintptr_t>(::GetModuleHandleA(name)); };
+
+    return AllocatorModules{base_of("ntdll.dll"), base_of("kernel32.dll"), base_of("kernelbase.dll"), 0u};
+}
+
+// The module that asked for this allocation, stepping over the allocators.
+// Falls back to the immediate caller when the walk produced nothing, so a record
+// captured before RtlCaptureStackBackTrace resolved still says something.
+inline auto requester_of(const AllocRecord &record, const AllocatorModules &allocators) -> std::uint64_t
+{
+    auto modules = FrameModules{};
+    const auto usable =
+        record.frame_count < max_alloc_frames ? record.frame_count : static_cast<std::uint32_t>(max_alloc_frames);
+    for (auto i = std::uint32_t{0}; i < usable; ++i)
+    {
+        modules[i] = module_of(record.frames[i]);
+    }
+
+    if (const auto module = requesting_module(modules, usable, allocators); module != 0u)
+    {
+        return module;
+    }
+    return module_of(record.caller);
+}
+
 }
 
 inline auto report_alloc_records(std::string_view reason) -> void
@@ -589,6 +698,7 @@ inline auto report_alloc_records(std::string_view reason) -> void
     auto largest_at = std::uint64_t{};
     auto by_module = AllocAttribution{};
     auto unattributable = std::uint32_t{};
+    const auto allocators = detail::allocator_modules();
 
     for (auto i = std::size_t{0}; i < count; ++i)
     {
@@ -597,7 +707,7 @@ inline auto report_alloc_records(std::string_view reason) -> void
         {
             continue;
         }
-        if (!attribute(by_module, detail::module_of(record.caller), record.size))
+        if (!attribute(by_module, detail::requester_of(record, allocators), record.size))
         {
             ++unattributable;
         }

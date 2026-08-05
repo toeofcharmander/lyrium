@@ -137,3 +137,88 @@ TEST(AllocAttribution, IgnoresAnEmptyAllocation)
     EXPECT_FALSE(attribute(table, system_d3d9, 0u));
     EXPECT_EQ(attributed_modules(table), 0u);
 }
+
+// ---------------------------------------------------------------------------
+// Finding the module that asked, rather than the one that allocated.
+//
+// A live session resolved every one of 256 records to ntdll.dll or KERNEL32.DLL,
+// which answers nothing: those are the allocators. RtlAllocateHeap and
+// VirtualAlloc are what call NtAllocateVirtualMemory, so there is always at
+// least one allocator frame between the client and the syscall and the immediate
+// return address can never name the client. The requester is the first frame
+// outward that belongs to something else.
+// ---------------------------------------------------------------------------
+
+using lyrium::diag::AllocatorModules;
+using lyrium::diag::FrameModules;
+using lyrium::diag::requesting_module;
+
+namespace
+{
+
+constexpr auto ntdll = std::uint64_t{0x76ea0000};
+constexpr auto kernel32 = std::uint64_t{0x75550000};
+constexpr auto kernelbase = std::uint64_t{0x75000000};
+
+constexpr auto allocators() -> AllocatorModules
+{
+    return AllocatorModules{ntdll, kernel32, kernelbase, 0u};
+}
+
+}
+
+TEST(RequestingModule, SkipsTheAllocatorAndNamesTheCaller)
+{
+    const auto frames = FrameModules{ntdll, system_d3d9, game_exe, 0u, 0u, 0u, 0u, 0u};
+
+    EXPECT_EQ(requesting_module(frames, 3u, allocators()), system_d3d9);
+}
+
+// The observed shape: VirtualAlloc in kernel32 forwarding into ntdll's syscall
+// stub, two allocator frames deep before anything real.
+TEST(RequestingModule, SkipsSeveralAllocatorFrames)
+{
+    const auto frames = FrameModules{ntdll, kernelbase, kernel32, driver_umd, 0u, 0u, 0u, 0u};
+
+    EXPECT_EQ(requesting_module(frames, 4u, allocators()), driver_umd);
+}
+
+// An unresolvable frame is not a module and must not be reported as one, or a
+// gap in the walk would masquerade as the answer.
+TEST(RequestingModule, StepsOverAFrameThatResolvedToNothing)
+{
+    const auto frames = FrameModules{ntdll, 0u, system_d3d9, 0u, 0u, 0u, 0u, 0u};
+
+    EXPECT_EQ(requesting_module(frames, 3u, allocators()), system_d3d9);
+}
+
+TEST(RequestingModule, ReportsNothingWhenEveryFrameIsAnAllocator)
+{
+    const auto frames = FrameModules{ntdll, kernel32, 0u, 0u, 0u, 0u, 0u, 0u};
+
+    EXPECT_EQ(requesting_module(frames, 2u, allocators()), 0u);
+}
+
+TEST(RequestingModule, ReportsNothingWithoutFrames)
+{
+    EXPECT_EQ(requesting_module(FrameModules{}, 0u, allocators()), 0u);
+}
+
+// The walk returns fewer frames than the array holds more often than not, and
+// the slots past frame_count are stale rather than empty.
+TEST(RequestingModule, ReadsNoFurtherThanTheFrameCount)
+{
+    const auto frames = FrameModules{ntdll, kernel32, system_d3d9, 0u, 0u, 0u, 0u, 0u};
+
+    EXPECT_EQ(requesting_module(frames, 2u, allocators()), 0u) << "read past the frames the walk actually returned";
+}
+
+// lyrium is deliberately not an allocator module. If our own staging sections
+// are what cut the space, that is a finding we must be able to see.
+TEST(RequestingModule, NamesOurselvesRatherThanHidingIt)
+{
+    constexpr auto lyrium_dll = std::uint64_t{0x10000000};
+    const auto frames = FrameModules{ntdll, lyrium_dll, 0u, 0u, 0u, 0u, 0u, 0u};
+
+    EXPECT_EQ(requesting_module(frames, 2u, allocators()), lyrium_dll);
+}
