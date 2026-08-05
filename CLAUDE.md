@@ -398,12 +398,11 @@ The main mechanisms, each mostly independent:
   routes every lock through the mapped section instead. The same wrapper is what
   lets a DEFAULT texture survive device `Reset`, which a plain DEFAULT resource
   does not.
-- **LocalAlloc arena** (`allocators/arena.h`,
-  `allocators/local_alloc_interposer.h`, `allocators/local_alloc_policy.h`) --
-  serves `d3d9.dll`'s large `LocalAlloc` requests from one contiguous
-  reservation. **Off by default (`local_arena_mb=0`), and it works exactly as
-  designed while still losing to relocation.** See "What the MANAGED duplicate
-  actually is" and "Why the arena loses to relocation" below before touching it.
+- **LocalAlloc arena -- removed.** It served `d3d9.dll`'s large `LocalAlloc`
+  requests from one contiguous reservation, worked exactly as designed across two
+  runs, and lost to relocation anyway. It changed no shipping code and is
+  recoverable from history. The measurement it produced is kept below; the code
+  is not. See "Why the arena loses to relocation".
 
 - **Texture recycler** (`texture_recycler.h`) -- optional reuse of released
   textures keyed by shape, with a byte budget.
@@ -469,10 +468,10 @@ and recorded nothing in any session.
 
 ### Why the arena loses to relocation
 
-`local_alloc_interposer.h` is built against that measurement and works. Two
-consecutive runs served **137 allocations and 211.4 MB each**, identical
-`largest_free_kb=127318`, `full_fallbacks=0`, no internal fragmentation, holding
-essentially the whole MANAGED set. The mechanism is correct.
+The interposer built against that measurement worked. Two consecutive runs
+served **137 allocations and 211.4 MB each**, identical `largest_free_kb=127318`,
+`full_fallbacks=0`, no internal fragmentation, holding essentially the whole
+MANAGED set. The mechanism was correct.
 
 It still loses, and the reason is arithmetic rather than a defect:
 

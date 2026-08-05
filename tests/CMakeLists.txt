@@ -38,8 +38,6 @@ endfunction()
 
 lyrium_add_test(abi_probe_test SOURCES unit/abi_probe_test.cpp)
 lyrium_add_test(sha256_test SOURCES unit/sha256_test.cpp)
-lyrium_add_test(arena_test SOURCES unit/arena_test.cpp)
-lyrium_add_test(local_alloc_policy_test SOURCES unit/local_alloc_policy_test.cpp)
 lyrium_add_test(page_allocator_test SOURCES unit/page_allocator_test.cpp)
 lyrium_add_test(free_list_allocator_test SOURCES unit/free_list_allocator_test.cpp)
 lyrium_add_test(targets_table_test SOURCES unit/targets_table_test.cpp)

@@ -64,17 +64,6 @@ struct Config
     bool overlay{true};
     bool allocation_watch{false};
 
-    // Megabytes reserved to serve d3d9.dll's large LocalAlloc requests, or 0 to
-    // leave the runtime's allocator alone. Off by default: this changes another
-    // module's allocation behaviour, and the arena that preceded it was built
-    // against a guessed call and served nothing. See local_alloc_interposer.h
-    // for the measurement this one is built against.
-    std::uint32_t local_arena_mb{0};
-    // Requests at or above this many kilobytes are served from the arena. The NT
-    // heap sends anything past 508 KB to its own dedicated reservation, which is
-    // exactly the traffic that fragments the address space.
-    std::uint32_t local_arena_threshold_kb{512};
-
     bool logging{false};
 
     std::filesystem::path log_directory{};
@@ -149,14 +138,6 @@ inline auto apply_values(Config &config, const ConfigValues &values) -> void
 
     config.overlay = parse_bool(lookup("overlay"), false);
     config.allocation_watch = parse_bool(lookup("allocation_watch"), false);
-    if (const auto value = lookup("local_arena_mb"); !value.empty())
-    {
-        config.local_arena_mb = static_cast<std::uint32_t>(std::strtoul(value.c_str(), nullptr, 10));
-    }
-    if (const auto value = lookup("local_arena_threshold_kb"); !value.empty())
-    {
-        config.local_arena_threshold_kb = static_cast<std::uint32_t>(std::strtoul(value.c_str(), nullptr, 10));
-    }
     config.logging = parse_bool(lookup("logging"), false);
 
     config.recycler.enabled = parse_bool(lookup("recycler"), false);
