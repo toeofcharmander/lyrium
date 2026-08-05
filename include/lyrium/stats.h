@@ -74,6 +74,13 @@ inline std::atomic<std::uint64_t> rescue_attempts{};
 inline std::atomic<std::uint64_t> rescue_successes{};
 inline std::atomic<std::uint64_t> rescue_preemptive{};
 
+// Rescues the old rule would have armed and this one does not: the block below
+// the 2 GB line is under the floor while the whole space is not. On a
+// large-address-aware process that difference is a rescue avoided, and the
+// eviction stutter avoided with it. On a 2 GB install the two figures are the
+// same and this stays zero.
+inline std::atomic<std::uint64_t> rescue_avoided_low{};
+
 inline ResourceTracker<void *> live_vertex_buffers{};
 inline ResourceTracker<void *> live_index_buffers{};
 inline ResourceTracker<void *> live_state_blocks{};

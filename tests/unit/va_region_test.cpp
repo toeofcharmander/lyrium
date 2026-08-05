@@ -92,3 +92,33 @@ TEST(VaRegion, TheWalkStopsWhenARegionDoesNotAdvanceTheCursor)
 static_assert(usable_below_2g(0u, 4096u) == 4096u);
 static_assert(usable_below_2g(two_gigabytes, 4096u) == 0u);
 static_assert(usable_below_2g(two_gigabytes - 1024u, 4096u) == 1024u);
+
+// Which free-block figure the rescue should be measured against.
+//
+// The probe took the smaller of the two on every install. On a
+// large-address-aware process that is the wrong constraint: Windows allocates
+// bottom-up and serves each reservation from the lowest hole that fits, so when
+// no low hole fits it serves from the untouched region above the 2 GB line by
+// itself. Across every captured session the low block fell as far as 12 MB with
+// creates never once failing, while the rescue fired and evicted -- stutter
+// spent on a problem the OS was already handling.
+TEST(HeadroomChoice, ALargeAddressAwareProcessIsMeasuredByTheWholeSpace)
+{
+    // Low half nearly gone, high half untouched: not an emergency.
+    EXPECT_EQ(lyrium::diag::headroom_bytes(2'146'115'584ull, 12u * 1024u * 1024u, true), 2'146'115'584ull);
+}
+
+TEST(HeadroomChoice, WithoutLargeAddressAwarenessOnlyTheLowSpaceExists)
+{
+    // No region above the line to spill into, so the low block is the constraint.
+    EXPECT_EQ(lyrium::diag::headroom_bytes(600u * 1024u * 1024u, 12u * 1024u * 1024u, false), 12u * 1024u * 1024u);
+}
+
+// Unknown headroom must still read as pressure rather than as safety, which is
+// what silently disabled the rescue before the sampler's first tick.
+TEST(HeadroomChoice, AnUnknownReadingFallsBackToWhicheverIsKnown)
+{
+    EXPECT_EQ(lyrium::diag::headroom_bytes(0u, 12u * 1024u * 1024u, true), 12u * 1024u * 1024u);
+    EXPECT_EQ(lyrium::diag::headroom_bytes(600u * 1024u * 1024u, 0u, false), 600u * 1024u * 1024u);
+    EXPECT_EQ(lyrium::diag::headroom_bytes(0u, 0u, true), 0u);
+}

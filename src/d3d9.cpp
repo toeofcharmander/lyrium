@@ -65,6 +65,10 @@ auto com_hook = lyrium::COMHook{};
 
 auto config = lyrium::Config{};
 
+// Whether this process can use the space above the 2 GB line at all. Read once:
+// the rescue probe consults it on the create path, and this is a PE header walk.
+const auto process_is_large_address_aware = lyrium::diag::read_image_flags().large_address_aware;
+
 // Built once from the loaded configuration. This is a stepping stone: the policy
 // is owned by a composition root in a later step, not reached through a global.
 auto placement_policy() -> const lyrium::policy::TexturePlacementPolicy &
@@ -203,7 +207,7 @@ auto log_ledger_snapshot(std::string_view reason, const lyrium::diag::VaStats &)
     const auto rescue = rescue_coordinator().stats();
     lyrium::log(
         "rescue[{}]: pressure={} preemptive={} on_failure={} evictions={} clears={} managed={} released={} "
-        "suppressed={} scratch={}/{}kb headroom={} last={} acted={}",
+        "suppressed={} scratch={}/{}kb headroom={} laa={} low={} avoided={} last={} acted={}",
         reason,
         rescue.under_pressure,
         rescue.preemptive,
@@ -216,6 +220,9 @@ auto log_ledger_snapshot(std::string_view reason, const lyrium::diag::VaStats &)
         rescue.scratch_flushes,
         rescue.scratch_bytes_released / 1024u,
         rescue.last_largest_free_bytes,
+        process_is_large_address_aware,
+        lyrium::diag::Sampler::instance().largest_free_below_2g(),
+        lyrium::stats::rescue_avoided_low.load(std::memory_order_relaxed),
         rescue.last_reason,
         rescue.last_action_reason);
 }
@@ -310,12 +317,10 @@ class EngineEvictionBackend final : public lyrium::policy::EvictionBackend
 // address-space walk was measured between 9 and 20 ms during gameplay, growing
 // with fragmentation, so it can never happen on the create path.
 //
-// Reports the tighter of the two readings. On this large-address-aware build
-// largest_free stays pinned near 2 GB because the space above that line is
-// untouched, while the block below it fell from 577 MB to 153 MB during a short
-// intro playthrough. Taking the smaller value means an unpatched 2 GB install
-// and a patched 4 GB one are both measured by the constraint that actually
-// binds, and errs toward rescuing early rather than never.
+// Which of the two readings binds depends on the install; diag::headroom_bytes
+// holds that decision and the evidence for it. This used to report the smaller
+// unconditionally, which on a large-address-aware process meant evicting the
+// engine's cache while 2 GB sat free above the line.
 class SamplerFreeSpaceProbe final : public lyrium::policy::FreeSpaceProbe
 {
   public:
@@ -324,16 +329,18 @@ class SamplerFreeSpaceProbe final : public lyrium::policy::FreeSpaceProbe
         const auto &sampler = lyrium::diag::Sampler::instance();
         const auto anywhere = sampler.largest_free();
         const auto below_2g = sampler.largest_free_below_2g();
+        const auto headroom = lyrium::diag::headroom_bytes(anywhere, below_2g, process_is_large_address_aware);
 
-        if (anywhere == 0u)
+        // Counts what the old rule would have done differently, so one session
+        // shows whether it was crying wolf. Deliberately compares against the
+        // policy's own floor rather than a number repeated here.
+        constexpr auto floor_bytes = lyrium::policy::RescueConfig{}.headroom_floor_bytes;
+        if (below_2g != 0u && below_2g < floor_bytes && headroom >= floor_bytes)
         {
-            return below_2g;
+            lyrium::stats::rescue_avoided_low.fetch_add(1u, std::memory_order_relaxed);
         }
-        if (below_2g == 0u)
-        {
-            return anywhere;
-        }
-        return below_2g < anywhere ? below_2g : anywhere;
+
+        return headroom;
     }
 };
 
