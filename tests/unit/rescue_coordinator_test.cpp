@@ -450,3 +450,25 @@ TEST(RescueCoordinator, ASmallCreateWithHealthyHeadroomStillIdlesOutEarly)
     EXPECT_FALSE(coordinator.consider(64u * 1024u, 0u).acted);
     EXPECT_FALSE(coordinator.stats().under_pressure);
 }
+
+// The loop a live session died in at 11 MB of headroom: the first rescue empties
+// the engine's pending queue, every later call reads "under pressure but the
+// cache has nothing pending" -- which does not act -- and a counter that only
+// counts actions freezes below the escalate threshold. Managed eviction needs no
+// pending queue and was one rung away the whole time. Pressure the policy keeps
+// SEEING must climb the ladder, whether or not the last rung managed to act.
+TEST(RescueCoordinator, AnEmptyCacheUnderSustainedPressureStillEscalates)
+{
+    Fixture f{};
+    auto coordinator = f.make();
+    f.probe.set(20u * mb);
+    f.backend.pending = 0;
+
+    for (auto i = 0; i < 6; ++i)
+    {
+        coordinator.consider(4u * mb, 0u);
+        f.clock.advance(100'000);
+    }
+
+    EXPECT_GT(f.backend.managed_calls, 0) << "an empty pending queue idled the ladder while headroom stayed critical";
+}

@@ -167,11 +167,11 @@ auto log_ledger_snapshot(std::string_view reason, const lyrium::diag::VaStats &)
         totals.relocated_bytes,
         lyrium::stats::d3d_creates.load(std::memory_order_relaxed),
         lyrium::stats::d3d_create_failures.load(std::memory_order_relaxed),
+        lyrium::stats::pool_overrides.load(std::memory_order_relaxed),
         lyrium::stats::uploads.load(std::memory_order_relaxed),
         lyrium::stats::upload_us.load(std::memory_order_relaxed) / 1000u,
         lyrium::stats::staging_created.load(std::memory_order_relaxed),
         lyrium::stats::staging_reused.load(std::memory_order_relaxed),
-        lyrium::stats::pool_overrides.load(std::memory_order_relaxed),
         lyrium::stats::pool_override_bytes.load(std::memory_order_relaxed),
         lyrium::stats::pool_reverts.load(std::memory_order_relaxed));
 

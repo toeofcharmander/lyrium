@@ -131,6 +131,16 @@ class RescueCoordinator
         if (plan.enters_pressure)
         {
             under_pressure_ = true;
+            if (attempt == 0u)
+            {
+                // Counts pressured decisions, not acted rescues. A live session
+                // froze one rung below managed eviction because its first rescue
+                // emptied the pending queue and "nothing pending" never acts --
+                // pressure the policy keeps seeing must climb regardless.
+                // Rate-limited calls carry no pressure verdict, so pacing between
+                // rungs is preserved.
+                ++consecutive_preemptive_;
+            }
         }
         if (plan.leaves_pressure)
         {
@@ -156,7 +166,6 @@ class RescueCoordinator
         if (attempt == 0u)
         {
             ++stats_.preemptive;
-            ++consecutive_preemptive_;
         }
         else
         {
