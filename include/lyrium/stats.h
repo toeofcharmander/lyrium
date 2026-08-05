@@ -38,22 +38,18 @@ inline std::atomic<std::uint64_t> unmap_us{};
 inline std::atomic<std::uint64_t> mapping_creates{};
 inline std::atomic<std::uint64_t> mapping_create_us{};
 
-// The frame itself, and the video memory the driver says is left.
+// Free video memory, sampled once a second from EndScene.
 //
-// MSDN is explicit that mixing DEFAULT and MANAGED allocations makes the runtime
-// evict managed resources to satisfy DEFAULT requests, and that when it detects
-// evicting something used earlier in the same frame it switches replacement
-// policy for the rest of the frame -- "such thrashing behavior will
-// significantly impact the rendering performance". That cost lands inside the
-// game's own draw calls, where none of this project's timers can see it, which
-// fits every measurement so far: our whole relocation path costs under half a
-// second per session while the stall lasts seconds, and only disabling
-// relocation removes it. frame_slowest_us is the one that matters; a stall is a
-// few very long frames, not a raised average.
-inline std::atomic<std::uint64_t> frames{};
-inline std::atomic<std::uint64_t> frame_us{};
-inline std::atomic<std::uint64_t> frame_slowest_us{};
-inline std::atomic<std::uint64_t> frames_over_100ms{};
+// Kept although the hypothesis it was added to test is closed: MSDN documents
+// that mixing DEFAULT and MANAGED allocations makes the runtime evict managed
+// resources and thrash, and this measured 3543 MB free with a 3532 MB low-water
+// mark across a session that stuttered visibly. That is the evidence ruling it
+// out, and one driver call per second is nearly free.
+//
+// Frame timing was removed with the Present hook it needed. It was installed on
+// IDirect3DDevice9::Present and caught 129 frames in a session with 81 device
+// resets, because this engine presents through the swap chain -- a counter
+// measuring the wrong call is worse than no counter.
 inline std::atomic<std::uint64_t> vram_free_bytes{};
 inline std::atomic<std::uint64_t> vram_low_water{~std::uint64_t{0}};
 

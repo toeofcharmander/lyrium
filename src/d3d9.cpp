@@ -158,7 +158,7 @@ auto log_ledger_snapshot(std::string_view reason, const lyrium::diag::VaStats &)
         "uploads={} flushes={} upload_ms={} staging_new={} staging_reused={} "
         "locks={} map_ms={} unmap_ms={} sections={} section_ms={} "
         "cre_def={}/{}ms cre_oth={}/{}ms cre_max={}us "
-        "frames={} frame_ms={} frame_max={}us slow_frames={} vram={}mb vram_min={}mb "
+        "vram={}mb vram_min={}mb "
         "override_bytes={} reverts={}",
         reason,
         totals.live_count,
@@ -190,10 +190,6 @@ auto log_ledger_snapshot(std::string_view reason, const lyrium::diag::VaStats &)
         lyrium::stats::create_other_calls.load(std::memory_order_relaxed),
         lyrium::stats::create_other_us.load(std::memory_order_relaxed) / 1000u,
         lyrium::stats::create_slowest_us.load(std::memory_order_relaxed),
-        lyrium::stats::frames.load(std::memory_order_relaxed),
-        lyrium::stats::frame_us.load(std::memory_order_relaxed) / 1000u,
-        lyrium::stats::frame_slowest_us.load(std::memory_order_relaxed),
-        lyrium::stats::frames_over_100ms.load(std::memory_order_relaxed),
         lyrium::stats::vram_free_bytes.load(std::memory_order_relaxed) / (1024u * 1024u),
         lyrium::stats::vram_low_water.load(std::memory_order_relaxed) / (1024u * 1024u),
         lyrium::stats::pool_override_bytes.load(std::memory_order_relaxed),
@@ -467,13 +463,6 @@ auto rescue_stats() -> policy::RescueStats
 }
 
 __declspec(dllexport) ::HRESULT WINAPI IDirect3DDevice9_EndScene_Hook(::PROC orig_func, void *that);
-__declspec(dllexport) ::HRESULT WINAPI IDirect3DDevice9_Present_hook(
-    ::PROC orig_func,
-    void *that,
-    const ::RECT *pSourceRect,
-    const ::RECT *pDestRect,
-    ::HWND hDestWindowOverride,
-    const ::RGNDATA *pDirtyRegion);
 __declspec(dllexport) ::HRESULT WINAPI IDirect3DDevice9_SetStreamSource_hook(
     ::PROC orig_func,
     void *that,
@@ -573,41 +562,6 @@ __declspec(dllexport) ::HRESULT WINAPI IDirect3D9_CreateDevice_hook(
     ::DWORD BehaviorFlags,
     ::D3DPRESENT_PARAMETERS *pPresentationParameters,
     ::IDirect3DDevice9 **ppReturnedDeviceInterface);
-
-// Present, not EndScene. EndScene closes the scene and returns without doing
-// driver work; Present is where queued GPU work is flushed and the CPU blocks.
-// Timing EndScene across a visibly stuttering session gave 2 ms total over 2237
-// frames with no frame above 527 us, which measured the wrong call rather than
-// exonerating the frame.
-__declspec(dllexport) ::HRESULT WINAPI IDirect3DDevice9_Present_hook(
-    ::PROC orig_func,
-    void *that,
-    const ::RECT *pSourceRect,
-    const ::RECT *pDestRect,
-    ::HWND hDestWindowOverride,
-    const ::RGNDATA *pDirtyRegion)
-{
-    using orig_call_type = OrigFuncType<decltype(&IDirect3DDevice9_Present_hook)>;
-
-    const auto started = lyrium::now_us();
-    const auto res =
-        reinterpret_cast<orig_call_type>(orig_func)(that, pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion);
-    const auto elapsed = static_cast<std::uint64_t>(lyrium::now_us() - started);
-
-    lyrium::stats::frames.fetch_add(1u, std::memory_order_relaxed);
-    lyrium::stats::frame_us.fetch_add(elapsed, std::memory_order_relaxed);
-    if (elapsed > 100'000u)
-    {
-        lyrium::stats::frames_over_100ms.fetch_add(1u, std::memory_order_relaxed);
-    }
-    auto slowest = lyrium::stats::frame_slowest_us.load(std::memory_order_relaxed);
-    while (elapsed > slowest &&
-           !lyrium::stats::frame_slowest_us.compare_exchange_weak(slowest, elapsed, std::memory_order_relaxed))
-    {
-    }
-
-    return res;
-}
 
 __declspec(dllexport) ::HRESULT WINAPI IDirect3DDevice9_EndScene_Hook(::PROC orig_func, void *that)
 {
@@ -1214,7 +1168,6 @@ __declspec(dllexport) ::HRESULT WINAPI IDirect3D9_CreateDevice_hook(
     com_hook.add_hook<27zu>(device, IDirect3DDevice9_CreateIndexBuffer_hook);
     com_hook.add_hook<28zu>(device, IDirect3DDevice9_CreateRenderTarget_hook);
     com_hook.add_hook<31zu>(device, IDirect3DDevice9_UpdateTexture_hook);
-    com_hook.add_hook<17zu>(device, IDirect3DDevice9_Present_hook);
     com_hook.add_hook<42zu>(device, IDirect3DDevice9_EndScene_Hook);
     com_hook.add_hook<60zu>(device, IDirect3DDevice9_CreateStateBlock_hook);
     com_hook.add_hook<64zu>(device, IDirect3DDevice9_GetTexture_hook);
