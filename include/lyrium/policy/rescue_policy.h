@@ -91,12 +91,73 @@ struct RescueConfig
     bool unbounded{false};
 };
 
+// Why a request cannot be served, which is not the same question as whether
+// there is pressure.
+//
+// The pressure test compares the largest block against a threshold, which is a
+// proxy for "about to fail". This is the direct form: a request that exceeds the
+// largest block but not the total would fit if the free space were in one piece,
+// and that is fragmentation. One that exceeds the total would not fit however
+// the space were arranged, and that is exhaustion. A live session measured
+// 101.6 MB free below the 2 GB line with a largest block of 9.2 MB across 339
+// regions, which is the first condition in its purest form.
+//
+// The distinction decides whether eviction is worth attempting. Releasing a
+// texture adjacent to an existing hole enlarges that hole, so fragmentation is
+// worth a try. Under genuine exhaustion eviction reclaims real bytes too, but
+// nothing can be gained by rearrangement alone, and a caller may reasonably want
+// to know which it is looking at.
+enum class FreeSpaceShape
+{
+    // Either figure unknown. Deliberately not folded into exhausted: reading an
+    // unmeasured space as empty would report exhaustion on every call before the
+    // sampler's first walk.
+    unknown,
+    sufficient,
+    fragmented,
+    exhausted,
+};
+
+[[nodiscard]] constexpr auto diagnose(
+    std::uint64_t requested_bytes,
+    std::uint64_t largest_free_bytes,
+    std::uint64_t total_free_bytes) -> FreeSpaceShape
+{
+    if (largest_free_bytes == 0u || total_free_bytes == 0u)
+    {
+        return FreeSpaceShape::unknown;
+    }
+    if (requested_bytes <= largest_free_bytes)
+    {
+        return FreeSpaceShape::sufficient;
+    }
+    return requested_bytes <= total_free_bytes ? FreeSpaceShape::fragmented : FreeSpaceShape::exhausted;
+}
+
+[[nodiscard]] constexpr auto name_of(FreeSpaceShape shape) -> const char *
+{
+    switch (shape)
+    {
+        case FreeSpaceShape::sufficient: return "sufficient";
+        case FreeSpaceShape::fragmented: return "fragmented";
+        case FreeSpaceShape::exhausted: return "exhausted";
+        case FreeSpaceShape::unknown: break;
+    }
+    return "unknown";
+}
+
 struct RescueInputs
 {
     // Largest contiguous free block. Zero means UNKNOWN, not "plenty": the old
     // code treated zero as fine and so disabled rescue entirely until the
     // sampler's first tick.
     std::uint64_t largest_free_bytes{};
+
+    // Free bytes in the space the request must come from, however scattered.
+    // Zero means unknown. Diagnostic only: it decides which shape diagnose()
+    // reports, and no eviction decision reads it, so a stale or absent reading
+    // cannot change what the policy does.
+    std::uint64_t total_free_bytes{};
 
     std::uint64_t requested_bytes{};
 

@@ -9,6 +9,7 @@
 using lyrium::policy::Clock;
 using lyrium::policy::EvictionBackend;
 using lyrium::policy::FreeSpaceProbe;
+using lyrium::policy::FreeSpaceShape;
 using lyrium::policy::RescueConfig;
 using lyrium::policy::RescueCoordinator;
 
@@ -42,13 +43,26 @@ class FakeProbe final : public FreeSpaceProbe
         return largest_;
     }
 
+    // Defaults to a total far above the largest block, so tests that only set
+    // the largest block read as fragmented rather than exhausted.
+    [[nodiscard]] auto total_free_bytes() const -> std::uint64_t override
+    {
+        return total_;
+    }
+
     auto set(std::uint64_t bytes) -> void
     {
         largest_ = bytes;
     }
 
+    auto set_total(std::uint64_t bytes) -> void
+    {
+        total_ = bytes;
+    }
+
   private:
     std::uint64_t largest_{512u * mb};
+    std::uint64_t total_{2048u * mb};
 };
 
 // Models an engine cache that frees a fixed amount of contiguous space per
@@ -509,4 +523,22 @@ TEST(RescueCoordinator, ThePreemptiveLadderNeverEvictsManagedResources)
     EXPECT_EQ(f.backend.managed_calls, 0);
     EXPECT_GT(f.backend.scratch_calls, 0) << "the scratch pools are the cheapest space there is to give back";
     EXPECT_GT(f.backend.clear_calls, 0) << "persistent pressure must still end in the cache clear";
+}
+
+// The diagnosis is recorded, not acted on: a session log should be able to say
+// whether a tight moment was scattered bytes or no bytes, without the policy's
+// behaviour depending on a figure that is only sampled every few seconds.
+TEST(RescueCoordinator, RecordsWhetherTheSpaceWasScatteredOrGone)
+{
+    Fixture f{};
+    auto coordinator = f.make();
+
+    f.probe.set(9u * mb);
+    f.probe.set_total(101u * mb);
+    coordinator.consider(20u * mb, 0u);
+    EXPECT_EQ(coordinator.stats().last_shape, FreeSpaceShape::fragmented);
+
+    f.probe.set_total(15u * mb);
+    coordinator.consider(20u * mb, 0u);
+    EXPECT_EQ(coordinator.stats().last_shape, FreeSpaceShape::exhausted);
 }

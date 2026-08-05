@@ -33,6 +33,11 @@ class FreeSpaceProbe
   public:
     virtual ~FreeSpaceProbe() = default;
 
+    // Total free bytes in the space the request must come from, or 0 when not
+    // known. Paired with largest_free_bytes it separates fragmentation from
+    // exhaustion; see FreeSpaceShape. Must be as cheap as the largest-block read.
+    [[nodiscard]] virtual auto total_free_bytes() const -> std::uint64_t = 0;
+
     // Largest contiguous free block, or 0 when not yet known. Must be cheap:
     // a full address-space walk was measured at about 6.5 ms, which is 39
     // percent of a frame at 60 fps and cannot run on the create path.
@@ -73,6 +78,11 @@ struct RescueStats
     // last_reason because the call right after a rescue is nearly always a small
     // create idling out, which overwrites it before anything can read it.
     const char *last_action_reason{""};
+
+    // What the last decision saw the free space as. Records the diagnosis rather
+    // than acting on it: the policy's behaviour is unchanged, and this exists so
+    // a session log says whether a tight moment was scattered bytes or no bytes.
+    FreeSpaceShape last_shape{FreeSpaceShape::unknown};
 };
 
 // Holds the state a rescue decision needs and executes the resulting plan.
@@ -121,6 +131,7 @@ class RescueCoordinator
 
         const auto inputs = RescueInputs{
             .largest_free_bytes = probe_->largest_free_bytes(),
+            .total_free_bytes = probe_->total_free_bytes(),
             .requested_bytes = requested_bytes,
             .now_us = clock_->now_us(),
             .last_rescue_us = last_rescue_us_,
@@ -154,6 +165,7 @@ class RescueCoordinator
         }
         stats_.under_pressure = under_pressure_;
         stats_.last_largest_free_bytes = inputs.largest_free_bytes;
+        stats_.last_shape = diagnose(inputs.requested_bytes, inputs.largest_free_bytes, inputs.total_free_bytes);
         stats_.last_reason = plan.reason;
 
         if (!plan.acts())

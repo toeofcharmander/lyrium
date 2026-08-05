@@ -90,6 +90,7 @@ class Sampler
         last_largest_free_.store(stats.largest_free, std::memory_order_relaxed);
         last_largest_free_below_2g_.store(stats.largest_free_below_2g, std::memory_order_relaxed);
         last_total_free_.store(stats.total_free, std::memory_order_relaxed);
+        last_total_free_below_2g_.store(stats.total_free_below_2g, std::memory_order_relaxed);
 
         // The address-space walk is the whole point of this project, and until
         // now its result reached nothing but two atomics and the overlay. Logging
@@ -153,6 +154,13 @@ class Sampler
         return last_total_free_.load(std::memory_order_relaxed);
     }
 
+    // Free bytes below the 2 GB line, however scattered. Paired with
+    // largest_free_below_2g this separates fragmentation from exhaustion.
+    auto total_free_below_2g() const -> std::uint64_t
+    {
+        return last_total_free_below_2g_.load(std::memory_order_relaxed);
+    }
+
   private:
     Sampler() = default;
 
@@ -186,6 +194,7 @@ class Sampler
     std::atomic<std::uint64_t> last_largest_free_{};
     std::atomic<std::uint64_t> last_largest_free_below_2g_{};
     std::atomic<std::uint64_t> last_total_free_{};
+    std::atomic<std::uint64_t> last_total_free_below_2g_{};
     std::atomic<Observer> observer_{nullptr};
     // Start-once latch only; nothing ever clears it.
     bool running_{false};

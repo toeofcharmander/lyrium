@@ -203,7 +203,7 @@ auto log_ledger_snapshot(std::string_view reason, const lyrium::diag::VaStats &)
     const auto rescue = rescue_coordinator().stats();
     lyrium::log(
         "rescue[{}]: pressure={} preemptive={} on_failure={} evictions={} clears={} managed={} released={} "
-        "suppressed={} scratch={}/{}kb headroom={} laa={} low={} avoided={} last={} acted={}",
+        "suppressed={} scratch={}/{}kb headroom={} laa={} low={} avoided={} shape={} last={} acted={}",
         reason,
         rescue.under_pressure,
         rescue.preemptive,
@@ -219,6 +219,7 @@ auto log_ledger_snapshot(std::string_view reason, const lyrium::diag::VaStats &)
         process_is_large_address_aware,
         lyrium::diag::Sampler::instance().largest_free_below_2g(),
         lyrium::stats::rescue_avoided_low.load(std::memory_order_relaxed),
+        lyrium::policy::name_of(rescue.last_shape),
         rescue.last_reason,
         rescue.last_action_reason);
 }
@@ -337,6 +338,14 @@ class SamplerFreeSpaceProbe final : public lyrium::policy::FreeSpaceProbe
         }
 
         return headroom;
+    }
+
+    // The same space the headroom figure describes, so the two are comparable:
+    // whole process under LAA, below the line otherwise.
+    [[nodiscard]] auto total_free_bytes() const -> std::uint64_t override
+    {
+        const auto &sampler = lyrium::diag::Sampler::instance();
+        return process_is_large_address_aware ? sampler.total_free() : sampler.total_free_below_2g();
     }
 };
 

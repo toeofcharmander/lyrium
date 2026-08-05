@@ -4,8 +4,10 @@
 
 #include "lyrium/policy/rescue_policy.h"
 
+using lyrium::policy::diagnose;
 using lyrium::policy::escalation_strength;
 using lyrium::policy::EvictAction;
+using lyrium::policy::FreeSpaceShape;
 using lyrium::policy::RescueConfig;
 using lyrium::policy::RescueInputs;
 using lyrium::policy::RescuePolicy;
@@ -326,3 +328,52 @@ static_assert(policy()
                           .pending_releases = 10,
                           .cache_available = true})
                   .acts());
+
+// ---------------------------------------------------------------------------
+// Diagnosing why a request cannot be served.
+//
+// The pressure test compares the largest block against a threshold, which is a
+// proxy. The actual question is whether the request would fit in the free space
+// if the free space were in one piece. A live session measured 101.6 MB free
+// below the 2 GB line with the largest block at 9.2 MB across 339 regions: the
+// bytes present, in fragments, unusable for anything large. That is a different
+// condition from being genuinely out of memory, and eviction is worth trying for
+// one and pointless for the other.
+// ---------------------------------------------------------------------------
+
+TEST(FreeSpaceShape, ScatteredSpaceThatWouldOtherwiseFitIsFragmentation)
+{
+    // 20 MB wanted, 9.2 MB largest, 101.6 MB total: it would fit if it were whole.
+    EXPECT_EQ(diagnose(20u * mb, 9u * mb + 200u * 1024u, 101u * mb), FreeSpaceShape::fragmented);
+}
+
+TEST(FreeSpaceShape, NotEnoughInTotalIsExhaustionRatherThanFragmentation)
+{
+    // Compacting every byte still would not serve this. Evicting the cache might
+    // free real bytes, but no rearrangement can.
+    EXPECT_EQ(diagnose(20u * mb, 9u * mb, 15u * mb), FreeSpaceShape::exhausted);
+}
+
+TEST(FreeSpaceShape, ARequestThatAlreadyFitsIsNeither)
+{
+    EXPECT_EQ(diagnose(4u * mb, 9u * mb, 101u * mb), FreeSpaceShape::sufficient);
+}
+
+// The boundary matters: a request exactly the size of the largest block fits.
+TEST(FreeSpaceShape, ARequestExactlyTheSizeOfTheLargestBlockFits)
+{
+    EXPECT_EQ(diagnose(9u * mb, 9u * mb, 101u * mb), FreeSpaceShape::sufficient);
+}
+
+// An unknown total cannot be used to rule fragmentation in or out, and must not
+// be read as zero -- that would report exhaustion on every call before the
+// sampler's first walk.
+TEST(FreeSpaceShape, AnUnknownTotalIsNotReadAsExhaustion)
+{
+    EXPECT_EQ(diagnose(20u * mb, 9u * mb, 0u), FreeSpaceShape::unknown);
+}
+
+TEST(FreeSpaceShape, AnUnknownLargestBlockIsUnknownToo)
+{
+    EXPECT_EQ(diagnose(20u * mb, 0u, 101u * mb), FreeSpaceShape::unknown);
+}
