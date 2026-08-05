@@ -18,6 +18,10 @@ work — steering managed textures to the DEFAULT pool and backing their CPU-sid
 copy with a pagefile-backed file mapping that is only mapped during a lock — is
 his, and it survives here essentially unchanged because it is the right design.
 
+The startup pool patch is his as well — `main_pool_mb` — though it shipped
+switched off, and working out what it is actually worth is the one measurement
+here that changes what the mod does.
+
 lyrium has diverged substantially: the policy layer is rewritten and unit
 tested, the eviction behaviour is bounded rather than unbounded, and there is a
 test suite where there was none. But the diagnosis and the central mechanism are
@@ -103,6 +107,46 @@ overlay=1
 `overlay` toggles a panel on Shift+F12. `logging` writes a session log to
 `lyrium_logs/`. Both are off by default. See `include/lyrium/config.h` for the
 full set of keys.
+
+**Run the game in borderless windowed mode if you can.** Dragon Age loses the
+Direct3D device every time you alt-tab out of fullscreen, and rebuilding it is
+where the game's own long-standing pure-virtual crash lives — it has nothing to
+do with memory and nothing this mod does can prevent it. A borderless window
+never loses the device, so the crash never gets its opportunity.
+
+## Reclaiming the engine's startup pool
+
+The engine reserves **850 MB** for its own memory pool the moment it starts, and
+on a 2 GB install it does not need all of it. Handing some back is the largest
+single improvement available:
+
+```
+[lyrium]
+main_pool_mb=768
+```
+
+On a heavily modded 2 GB install this moved the largest unbroken block of free
+address space from **2.4 MB to 110 MB**, and the emergency eviction path stopped
+running almost entirely. It is off by default because the right value depends on
+your mod load, and because getting it wrong is not obvious.
+
+**How to tune it.** Start at 768. If the game is happy, you are done. There is
+little to gain below 704 and real risk further down.
+
+**Both ways it goes wrong:**
+
+| symptom | meaning |
+|---|---|
+| textures flickering, out-of-memory crashes in long sessions | value too **high** — try 704 |
+| **missing scenery or characters**, or a hang during a level load | value too **low** — raise it, or set 0 |
+
+The second one is the one to watch for, because the game does not complain: it
+skips whatever it could not fit and carries on, so you get a running game with
+holes in it rather than an error. `main_pool_mb=0` restores the stock 850 MB
+pool exactly.
+
+The patch verifies the exact instruction and its original value before writing
+anything, and declines entirely on a game build it does not recognise.
 
 The panel leads with the number that predicts the crash: **headroom**, the
 largest single unbroken block of address space still available, with a mark
