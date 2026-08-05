@@ -281,6 +281,18 @@ that name no D3D or Windows type, so they compile and are tested on Linux:
 `policy/rescue_coordinator.h` executes plans through abstract seams. The D3D
 hooks convert at the boundary and contain no decisions of their own.
 
+**Never patch a prologue you have not measured.** `hooks/prologue.h` exists
+because a five-byte inline hook was applied to `ntdll!RtlReAllocateHeap`, whose
+32-bit prologue is `6A 0C` (`push 0Ch`, two bytes) followed by `68 imm32` (five
+bytes). Five lands three bytes inside the second instruction, so the trampoline
+ended in a `push` whose immediate was assembled out of jump bytes and the game
+died executing an address it could not read. `RtlFreeHeap` and `RtlSizeHeap`
+begin `8B FF 55 8B EC`, the hotpatch prologue, which is exactly five bytes of
+three whole instructions -- which is why two of the three hooks worked and made
+the third look like something else. `patch_length()` returns 0 for anything it
+does not recognise, including relative calls and jumps whose displacements cannot
+survive being copied, and 0 means decline the hook rather than guess.
+
 **Arithmetic does not live in a Windows-only header.** Anything that includes
 `windows.h` or `psapi.h` cannot be reached by the test suite, so any calculation
 placed there is untestable by construction. Put the numbers in a portable header
@@ -326,6 +338,22 @@ The main mechanisms, each mostly independent:
   routes every lock through the mapped section instead. The same wrapper is what
   lets a DEFAULT texture survive device `Reset`, which a plain DEFAULT resource
   does not.
+- **Heap arena** (`allocators/arena.h`, `allocators/heap_interposer.h`) -- serves
+  `d3d9.dll`'s large heap allocations from one contiguous reservation, so the
+  runtime's texture duplicates stop cutting the low 2 GB into separate holes. The
+  arena coalesces on every free, so the churn heals inside a boundary nothing
+  else can see. **Off by default** (`heap_arena_mb=0`) and it has not yet
+  demonstrated value: in its first live session it installed correctly and served
+  **zero** allocations, because relocation was on and there were therefore no
+  MANAGED duplicates to catch. The two are alternatives, not complements -- to
+  test the arena, run it with `texture_pool_default=0`.
+
+  It hooks `RtlFreeHeap`, `RtlSizeHeap` and `RtlReAllocateHeap` process-wide plus
+  `d3d9.dll`'s `HeapAlloc` import, which is the largest blast radius in the
+  project. Everything is resolved and verified before a byte is patched, because
+  an earlier version installed the free hooks first and left them live when a
+  later step failed.
+
 - **Texture recycler** (`texture_recycler.h`) -- optional reuse of released
   textures keyed by shape, with a byte budget.
 - **Diagnostics** (`diag/`, `stats.h`, `log.h`, `overlay.*`) -- VA-space and
