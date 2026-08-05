@@ -839,8 +839,22 @@ __declspec(dllexport) ::HRESULT WINAPI IDirect3DDevice9_CreateTexture_hook(
         }
     }
 
+    // Marks the window the allocation watch attributes against. This one call is
+    // where the D3D9 runtime would allocate a MANAGED texture's system-memory
+    // duplicate, and marking it is the only way to see that: two sessions of
+    // stack walking resolved every record to ntdll, kernel32 or kernelbase,
+    // because RtlCaptureStackBackTrace follows the EBP chain and optimised
+    // 32-bit system code has no frame pointers to follow.
+    //
+    // A thread-local store and restore, unconditional because the watch is off
+    // by default and a branch would cost as much as the store.
     const auto create_started = lyrium::now_us();
-    auto res = original(that, Width, Height, Levels, Usage, Format, pool, ppTexture, pSharedHandle);
+    auto res = ::HRESULT{};
+    {
+        const auto watched = lyrium::diag::AllocContextScope{
+            lyrium::diag::current_alloc_context(), lyrium::diag::AllocContext::d3d_create_texture};
+        res = original(that, Width, Height, Levels, Usage, Format, pool, ppTexture, pSharedHandle);
+    }
     note_create_cost(pool, lyrium::now_us() - create_started);
 
     if (pool_overridden && SUCCEEDED(res) && ppTexture != nullptr && *ppTexture != nullptr)

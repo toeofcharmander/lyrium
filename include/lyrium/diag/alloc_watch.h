@@ -14,11 +14,23 @@
 
 #include "lyrium/dao/targets.h"
 #include "lyrium/diag/alloc_attribution.h"
+#include "lyrium/diag/alloc_context.h"
 #include "lyrium/diag/va_region.h"
 #include "lyrium/log.h"
 
 namespace lyrium::diag
 {
+
+// The hook window currently open on this thread. Thread-local because two render
+// threads must not see each other's, and because reading it costs nothing.
+//
+// Written only by AllocContextScope from lyrium's own hooks, read only by the
+// allocation detours, and then only for allocations already past the threshold.
+inline auto current_alloc_context() -> AllocContext &
+{
+    static thread_local auto context = AllocContext::none;
+    return context;
+}
 
 // Records an allocation's size, address and the stack that asked for it.
 //
@@ -50,6 +62,7 @@ struct AllocRecord
     std::uint64_t caller;
     std::uint32_t frames[max_alloc_frames];
     std::uint32_t frame_count;
+    AllocContext context;
     std::uint32_t type;
     std::uint32_t protect;
     std::int64_t stamp_us;
@@ -129,6 +142,7 @@ inline auto WINAPI virtual_alloc_detour(::LPVOID address, ::SIZE_T size, ::DWORD
                 .caller = reinterpret_cast<std::uintptr_t>(__builtin_return_address(0)),
                 .frames = {},
                 .frame_count = 0u,
+                .context = current_alloc_context(),
                 .type = allocation_type,
                 .protect = protect,
                 .stamp_us = 0,
@@ -186,6 +200,7 @@ inline auto __attribute__((stdcall)) nt_allocate_detour(
                 .caller = reinterpret_cast<std::uintptr_t>(__builtin_return_address(0)),
                 .frames = {},
                 .frame_count = 0u,
+                .context = current_alloc_context(),
                 .type = allocation_type,
                 .protect = protect,
                 .stamp_us = 0,
@@ -351,6 +366,7 @@ inline auto __attribute__((cdecl)) malloc_detour(std::size_t size) -> void *
                 .caller = reinterpret_cast<std::uintptr_t>(__builtin_return_address(0)),
                 .frames = {},
                 .frame_count = 0u,
+                .context = current_alloc_context(),
                 .type = malloc_record_marker,
                 .protect = 0u,
                 .stamp_us = 0,
@@ -745,10 +761,9 @@ inline auto report_alloc_records(std::string_view reason) -> void
         attributed_modules(by_module),
         unattributable);
 
-    // One line per module, which is the whole question: which code makes the
-    // allocations that cut the address space. largest_kb is what separates a
-    // module making many small allocations from the one making the 1.4 MB and
-    // 2.8 MB requests that fail.
+    // One line per module. Kept even though two sessions showed it can only ever
+    // name ntdll, kernel32 or kernelbase here: it is how that limit stays
+    // visible rather than becoming folklore, and it costs one line.
     for (auto used = attributed_modules(by_module), i = std::size_t{0}; i < used; ++i)
     {
         const auto &row = by_module[i];
@@ -760,6 +775,39 @@ inline auto report_alloc_records(std::string_view reason) -> void
             row.count,
             row.bytes / 1024u,
             row.largest / 1024u);
+    }
+
+    // One line per hook window, which is the question the module lines cannot
+    // reach: was this allocation caused by a texture create? A d3d_create row
+    // whose largest_kb matches the texture being made is the MANAGED duplicate,
+    // caught without unwinding anything.
+    auto by_context = std::array<ModuleAllocations, alloc_context_count>{};
+    for (auto i = std::size_t{0}; i < count; ++i)
+    {
+        const auto &record = detail::alloc_records[i];
+        if (record.result == 0u)
+        {
+            continue;
+        }
+        auto &row = by_context[static_cast<std::uint32_t>(record.context) % alloc_context_count];
+        ++row.count;
+        row.bytes += record.size;
+        row.largest = record.size > row.largest ? record.size : row.largest;
+    }
+
+    for (auto i = std::uint32_t{0}; i < alloc_context_count; ++i)
+    {
+        if (by_context[i].count == 0u)
+        {
+            continue;
+        }
+        lyrium::log(
+            "alloc_in[{}]: hook={} count={} kb={} largest_kb={}",
+            reason,
+            name_of(static_cast<AllocContext>(i)),
+            by_context[i].count,
+            by_context[i].bytes / 1024u,
+            by_context[i].largest / 1024u);
     }
 }
 
