@@ -34,6 +34,22 @@ and then the crash.
 The failure is not exhaustion. In a captured case there was 20 MB free, split
 across roughly 430 separate gaps — the memory existed, just never in one piece.
 
+**It is not a memory leak either**, though that is what it is almost universally
+called. Nothing is allocated and never returned. The engine takes a managed
+texture, uses it, releases it, and the bytes come back; total free memory holds
+steady for an entire session. What does not come back is the *shape*. Every
+allocate-and-release cycle re-cuts the free space slightly differently, because
+the texture that fills a hole is never the same size as the one that left, and
+roughly 150 MB of duplicates churn through per session. The bytes are conserved.
+The contiguity is not.
+
+That distinction matters because it says which fixes can possibly work. More RAM
+cannot help with a failure that happens while 2 GB is free. Neither can anything
+that only enlarges the arena. The LAA patch is worth applying and does not fix
+this: it doubles the space the grinding has to work through, which is why the
+standard advice is to save and restart every couple of hours. A fresh process
+gets a fresh, uncut address space.
+
 At startup the engine reserves about 795 MB for its own memory pool and roughly
 286 MB goes to module images (DLLs, CUDA, PhysX and so on), leaving around
 229 MB for managed texture duplicates. It does not happen on console, most

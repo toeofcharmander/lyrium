@@ -106,9 +106,23 @@ In descending order of weight:
 
 All ten engine hooks install at their preferred addresses with `base_delta == 0`,
 so the SHA-256 body check actually runs. Six device resets with texture accounting
-intact across every one. Zero create failures across 1,200+ textures. The eviction
-path itself has been exercised on both a 2 GB and a 4 GB install under heavy mod
-load.
+intact across every one. The eviction path itself has been exercised on both a
+2 GB and a 4 GB install under heavy mod load.
+
+The claim that matters is that the address space stops degrading, and that needs a
+long session rather than a smoke test. Over 2.5 hours and 1842 samples on the LAA
+install, the largest contiguous block below the 2 GB line fell from 577 MB to
+143 MB during load-in and then held at 143 MB for the rest of the session. Free
+regions went 160 to 341 and stayed at 341. Total free memory stayed flat at
+2362 MB throughout, which is the direct evidence that this is fragmentation and
+not the memory leak it is usually reported as. 2216 texture creates, none failed,
+and the rescue never fired once.
+
+That plateau is the whole argument. Without the fix the managed duplicates keep
+churning through the address space and keep re-cutting it, so the pieces get
+smaller until the largest one can no longer hold an 18.90 MB texture. Here the
+churn is gone, what remains reaches equilibrium, and the space stops being
+ground down.
 
 The original diagnosis is Nathan Baggs' (`nathan-baggs/mandrel`) and the core
 implementation is eluvian's (`adarec1994/eluvian`); see the README.

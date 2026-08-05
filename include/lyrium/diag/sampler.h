@@ -115,8 +115,13 @@ class Sampler
     }
 
     // Declines rather than waits: this is called from the render thread every
-    // frame, and a sample in progress holds the lock for the length of a full
-    // address-space walk, which is 6 to 20 ms.
+    // frame, and dropping one frame's figures costs nothing while a stall costs
+    // a visible hitch.
+    //
+    // Note the walk itself is not what this is guarding against. sample_now()
+    // completes sample_va() before taking this lock, so the lock is held only for
+    // the length of a struct copy -- which is why a walk with a measured worst
+    // case of 205 ms cannot stall the render thread.
     [[nodiscard]] auto try_snapshot(FreeSpaceSnapshot &out) const -> bool
     {
         const auto lock = std::unique_lock{snapshot_mutex_, std::try_to_lock};
