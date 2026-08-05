@@ -163,6 +163,31 @@ leaks** -- total free is flat, so a falling `total_free` in some future log mean
 a genuinely new bug, not this one. What degrades is contiguity, and here it stops
 degrading, which is the fix working rather than an absence of load.
 
+**Where the edge is, found by running the log longer.** The table above was
+written from the first 1842 samples. Continuing the same session to 4070 samples,
+and then deliberately hammering it with roughly ten alt-tabs and ten resolution
+changes, moved a number that had not moved in six hours. That is the method
+working: the plateau is real for play, and the boundary only appears under an
+attack, so both belong in the record.
+
+Under repeated device resets the largest block below 2 GB steps down in units of
+**exactly 21,168,128 bytes (0x1430000, 20.1875 MiB)**, five steps running, 143.48
+MB down to 22.31 MB. The step tracks new peak DEFAULT-pool bytes rather than the
+resets themselves -- peak climbed 733 -> 828 -> 921 -> 1038 MB at the same points
+-- and it **recovers** a full step when the working set falls, so it is a
+reservation tracking demand rather than a leak. Zero create failures throughout,
+3224 creates. Exactly one sample of 4070 sat below the 32 MB rescue floor, five
+seconds of exposure.
+
+Do not read that trough as a rescue defect without checking the new `headroom=`
+and `last=` fields on the `rescue[...]` line. The policy is correct at those
+values, pinned by `RescueCoordinator.RecordsTheHeadroomItActuallySaw` and the
+trough case in the policy tests; and the probe already reads the *smaller* of
+`largest_free` and `largest_free_below_2g` (`src/d3d9.cpp`), so it is not blind to
+the low block on an LAA install. The likely gate is `large_create_bytes`: a
+request under 1 MB idles before pressure is ever evaluated, and only eighteen
+creates fell inside that five second window.
+
 Walk cost across those samples: **median 15 ms, p90 29 ms, max 205 ms.** It tracks
 region count, so it climbs during load-in and then plateaus with everything else;
 the outliers are the sampler thread being descheduled, not work. It must never run

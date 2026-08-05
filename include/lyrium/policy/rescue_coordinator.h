@@ -53,6 +53,16 @@ struct RescueStats
     std::uint64_t released_total{};
     std::uint64_t suppressed{};
     bool under_pressure{};
+
+    // The inputs and verdict of the most recent decision, so a log line can say
+    // why nothing happened rather than only that nothing happened. A live
+    // session sat below the headroom floor without the pressure latch ever
+    // setting, and the log recorded outcomes only, so which gate stopped it was
+    // unknowable after the fact. Both are scalars: RescueCoordinator must stay
+    // trivially destructible, and last_reason only ever points at a string
+    // literal with static storage duration.
+    std::uint64_t last_largest_free_bytes{};
+    const char *last_reason{""};
 };
 
 // Holds the state a rescue decision needs and executes the resulting plan.
@@ -121,6 +131,8 @@ class RescueCoordinator
             under_pressure_ = false;
         }
         stats_.under_pressure = under_pressure_;
+        stats_.last_largest_free_bytes = inputs.largest_free_bytes;
+        stats_.last_reason = plan.reason;
 
         if (!plan.acts())
         {

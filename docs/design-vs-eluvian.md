@@ -118,6 +118,15 @@ regions went 160 to 341 and stayed at 341. Total free memory stayed flat at
 not the memory leak it is usually reported as. 2216 texture creates, none failed,
 and the rescue never fired once.
 
+Running the same log longer then found the edge, which is the method working
+rather than a walk-back. Across 4070 samples the plateau held for six hours of
+play. Deliberately forcing about ten alt-tabs and ten resolution changes stepped
+the low block down in units of exactly 21,168,128 bytes, five steps, tracking new
+peak DEFAULT-pool bytes rather than the resets. It recovered a full step when
+demand fell, so it is a reservation rather than a leak, and there were still zero
+create failures across 3224 creates. The plateau is what play produces; the step
+is what an attack produces.
+
 That plateau is the whole argument. Without the fix the managed duplicates keep
 churning through the address space and keep re-cutting it, so the pieces get
 smaller until the largest one can no longer hold an 18.90 MB texture. Here the

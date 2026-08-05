@@ -300,3 +300,33 @@ TEST(RescueCoordinator, BoundedEvictionReclaimsLessThanUnboundedForTheSamePressu
 static_assert(
     std::is_trivially_destructible_v<lyrium::policy::RescueCoordinator>,
     "RescueCoordinator must stay trivially destructible; see the composition in src/d3d9.cpp");
+
+// A live session showed the pressure latch never setting while the address space
+// dipped below the floor, and the log could not say which gate stopped it: the
+// rescue line recorded outcomes only. These two record the decision itself.
+TEST(RescueCoordinator, RecordsTheHeadroomItActuallySaw)
+{
+    Fixture f{};
+    auto coordinator = f.make();
+    f.probe.set(22u * mb);
+
+    coordinator.consider(4u * mb, 0u);
+
+    EXPECT_EQ(coordinator.stats().last_largest_free_bytes, 22u * mb);
+}
+
+TEST(RescueCoordinator, RecordsWhyItDeclinedToAct)
+{
+    Fixture f{};
+    auto coordinator = f.make();
+
+    // Below the floor, but the request is under large_create_bytes, so the policy
+    // idles before it ever evaluates pressure. That is the gate the live log
+    // could not distinguish from having plenty of headroom.
+    f.probe.set(22u * mb);
+    coordinator.consider(64u * 1024u, 0u);
+
+    ASSERT_NE(coordinator.stats().last_reason, nullptr);
+    EXPECT_STRNE(coordinator.stats().last_reason, "");
+    EXPECT_FALSE(coordinator.stats().under_pressure);
+}
