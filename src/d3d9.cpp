@@ -154,6 +154,7 @@ auto log_ledger_snapshot(std::string_view reason, const lyrium::diag::VaStats &)
         "uploads={} flushes={} upload_ms={} staging_new={} staging_reused={} "
         "locks={} map_ms={} unmap_ms={} sections={} section_ms={} "
         "cre_def={}/{}ms cre_oth={}/{}ms cre_max={}us "
+        "frames={} frame_ms={} frame_max={}us slow_frames={} vram={}mb vram_min={}mb "
         "override_bytes={} reverts={}",
         reason,
         totals.live_count,
@@ -185,6 +186,12 @@ auto log_ledger_snapshot(std::string_view reason, const lyrium::diag::VaStats &)
         lyrium::stats::create_other_calls.load(std::memory_order_relaxed),
         lyrium::stats::create_other_us.load(std::memory_order_relaxed) / 1000u,
         lyrium::stats::create_slowest_us.load(std::memory_order_relaxed),
+        lyrium::stats::frames.load(std::memory_order_relaxed),
+        lyrium::stats::frame_us.load(std::memory_order_relaxed) / 1000u,
+        lyrium::stats::frame_slowest_us.load(std::memory_order_relaxed),
+        lyrium::stats::frames_over_100ms.load(std::memory_order_relaxed),
+        lyrium::stats::vram_free_bytes.load(std::memory_order_relaxed) / (1024u * 1024u),
+        lyrium::stats::vram_low_water.load(std::memory_order_relaxed) / (1024u * 1024u),
         lyrium::stats::pool_override_bytes.load(std::memory_order_relaxed),
         lyrium::stats::pool_reverts.load(std::memory_order_relaxed));
 
@@ -512,7 +519,42 @@ __declspec(dllexport) ::HRESULT WINAPI IDirect3DDevice9_EndScene_Hook(::PROC ori
     lyrium::overlay::poll_hotkey();
     lyrium::overlay::render(reinterpret_cast<::IDirect3DDevice9 *>(that));
 
-    return reinterpret_cast<orig_call_type>(orig_func)(that);
+    // Times the engine's own EndScene, which is where the driver settles the
+    // frame's outstanding work. If the missing seconds are here rather than in
+    // any lyrium call, the cost is VRAM thrashing inside the runtime.
+    const auto frame_started = lyrium::now_us();
+    const auto result = reinterpret_cast<orig_call_type>(orig_func)(that);
+    const auto elapsed = static_cast<std::uint64_t>(lyrium::now_us() - frame_started);
+
+    lyrium::stats::frames.fetch_add(1u, std::memory_order_relaxed);
+    lyrium::stats::frame_us.fetch_add(elapsed, std::memory_order_relaxed);
+    if (elapsed > 100'000u)
+    {
+        lyrium::stats::frames_over_100ms.fetch_add(1u, std::memory_order_relaxed);
+    }
+    auto slowest = lyrium::stats::frame_slowest_us.load(std::memory_order_relaxed);
+    while (elapsed > slowest &&
+           !lyrium::stats::frame_slowest_us.compare_exchange_weak(slowest, elapsed, std::memory_order_relaxed))
+    {
+    }
+
+    // Sampled once a second rather than per frame: the driver call is not free
+    // and the number moves slowly.
+    static auto last_vram_us = std::int64_t{};
+    if (lyrium::now_us() - last_vram_us > 1'000'000)
+    {
+        last_vram_us = lyrium::now_us();
+        const auto free_vram =
+            static_cast<std::uint64_t>(reinterpret_cast<::IDirect3DDevice9 *>(that)->GetAvailableTextureMem());
+        lyrium::stats::vram_free_bytes.store(free_vram, std::memory_order_relaxed);
+        auto low = lyrium::stats::vram_low_water.load(std::memory_order_relaxed);
+        while (free_vram < low &&
+               !lyrium::stats::vram_low_water.compare_exchange_weak(low, free_vram, std::memory_order_relaxed))
+        {
+        }
+    }
+
+    return result;
 }
 
 __declspec(dllexport) ::HRESULT WINAPI IDirect3DDevice9_SetStreamSource_hook(
