@@ -17,7 +17,6 @@
 #include "lyrium/dao/engine_hooks.h"
 #include "lyrium/dao/pool_patch.h"
 #include "lyrium/diag/alloc_watch.h"
-#include "lyrium/diag/engine_health.h"
 #include "lyrium/diag/import_probe.h"
 #include "lyrium/diag/process_info.h"
 #include "lyrium/diag/sampler.h"
@@ -206,43 +205,32 @@ auto log_ledger_snapshot(std::string_view reason, const lyrium::diag::VaStats &)
         lyrium::diag::report_import_probe(reason);
     }
 
-    // The engine's own counters, which have been collected since before the
-    // pool patch was ever turned on and printed nowhere. Shrinking main_pool_mb
-    // too far starves the engine inside its own pool, and its failure mode is to
-    // skip the asset and carry on: a 512 MB run reported creates=4622
-    // failures=0 while the world was visibly missing geometry, because D3D never
-    // failed. Without this line the only detector is somebody looking at the
-    // screen, which makes the knob unsafe to put in front of anyone.
+    // The engine's own counters, collected since long before the pool patch was
+    // first turned on and printed nowhere until now.
+    //
+    // Deliberately reported without a verdict. A build that judged them shipped
+    // `health=healthy` while the game sat hung during a level load with
+    // main_pool_mb=512 -- because the engine does not fail its texture creates
+    // when its pool starves, it stops making them. The same knob's other failure
+    // mode, at the same 512 MB, was creates=4622 failures=0 with the world
+    // visibly missing geometry. Neither reaches create_texture_2d, so no verdict
+    // built on these numbers can see either one, and a gauge that reads healthy
+    // through both is worse than no gauge.
+    //
+    // What they are good for is reading a session afterwards: creates frozen
+    // while free space is plentiful and the rescue is idle is the signature of
+    // the hang, and it was invisible before this line existed.
     {
         const auto engine = lyrium::dao::engine_state();
-        const auto health = lyrium::diag::diagnose_engine_health(
-            engine.engine_texture_creates, engine.engine_texture_failures, lyrium::diag::EngineHealthConfig{});
-
         lyrium::log(
-            "engine[{}]: creates={} failures={} suspect={} loads={} evictions={} evicted={} health={}",
+            "engine[{}]: creates={} failures={} suspect={} loads={} evictions={} evicted={}",
             reason,
             engine.engine_texture_creates,
             engine.engine_texture_failures,
             engine.suspect_textures,
             engine.texture_loads,
             engine.evictions,
-            engine.evicted_textures,
-            lyrium::diag::name_of(health));
-
-        // Once per level rather than every five seconds, or the warning buries
-        // the log it exists to make readable.
-        static auto reported_health = lyrium::diag::EngineHealth::unknown;
-        if (pool_patch_result.applied && lyrium::diag::worth_warning(health, reported_health))
-        {
-            lyrium::log(
-                "WARNING: the engine is failing its own texture creates ({} of {}). "
-                "main_pool_mb={} is too small for this install: expect missing art rather than a crash. "
-                "Raise it, or set it to 0 to restore the stock pool.",
-                engine.engine_texture_failures,
-                engine.engine_texture_creates,
-                pool_patch_result.patched_bytes / (1024u * 1024u));
-        }
-        reported_health = health;
+            engine.evicted_textures);
     }
 
     const auto rescue = rescue_coordinator().stats();

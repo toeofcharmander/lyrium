@@ -145,8 +145,12 @@ ever entered on a stock install: `create_texture_2d`, `create_texture_cached`,
 assets arrive through the streaming path rather than as loose files. Each detour
 writes a one-time breadcrumb on first entry, so `lyrium_breadcrumbs.txt` is how
 you tell a dead path from a broken counter -- that is what established the
-permanent `texture loads: 0`, whose overlay row was dropped for reading as a
+near-permanent `texture loads: 0`, whose overlay row was dropped for reading as a
 broken gauge. Do not "fix" a zero counter without checking the breadcrumbs first.
+
+`load_texture_file` is **not** quite never: two sessions recorded `loads=2` and
+`loads=3` on the `engine[]` line. It is rare enough that the row was still worth
+dropping from the overlay, but "never fires" was too strong.
 
 Verified baseline on the GOG Ultimate Edition: overlay renders, all ten engine
 hooks report `installed` at their preferred addresses with `base_delta == 0`, and
@@ -282,6 +286,14 @@ MinGW-built DLL cannot raise R6025 -- that is MSVC's pure-virtual trap, and this
 game is statically linked MSVC 8 -- so the dialog alone proves the object is the
 game's.
 
+**Run borderless windowed.** A borderless window does not lose the device on
+alt-tab, so no reset is broadcast and the race never gets a chance to fire. Every
+crash logged while sizing the pool was this one, always at `0x0046b1b3`, always
+out of the reset path, and always with plentiful headroom -- one went at 33
+device resets and another survived 143. That variance is the race, not memory.
+It is the single most effective thing a player can do about this crash, and it
+costs nothing.
+
 **lyrium cannot fix it, only stop widening the window.** Removing two ~13 ms
 address-space walks from inside the `Reset` hook took the crash from easy to
 reproduce out to 57 resets, and removed a cutscene stutter at the same time.
@@ -378,8 +390,11 @@ is sealed explicitly at detach instead, on the exiting thread, taking no locks.
 
 The main mechanisms, each mostly independent:
 
-- **Pool patch** (`dao/pool_patch.h`) -- shrinks the engine's ~795 MB startup pool
-  by rewriting one instruction immediate at process attach.
+- **Pool patch** (`dao/pool_patch.h`) -- shrinks the engine's 850 MB startup pool
+  by rewriting one instruction immediate at process attach. **Inherited from
+  eluvian**, which shipped it defaulted to 0; what is lyrium's is knowing what it
+  is worth. It is the single largest address-space lever in the project. See
+  "Sizing the engine's main pool" below before changing it.
 - **Engine hooks** (`dao/engine_hooks.h`, `dao/inline_hook.h`, `dao/targets.h`) --
   inline hooks into engine functions (texture load/create paths, texture cache
   evict/clear, optionally CRT malloc/free) at fixed addresses. `dao/targets.h` is
@@ -425,6 +440,61 @@ routed through `allocators/imgui_allocator.h` the same way.
 Runtime configuration is read from `lyrium.ini` next to the game executable
 (`config.h` has every key and its default); logs go to `lyrium_logs/` when
 enabled.
+
+### Sizing the engine's main pool
+
+`main_pool_mb` rewrites one immediate at `0x004B8F30` --
+`mov dword ptr [esp+0x18], 0x35200000` -- the size the engine passes when it
+creates the pool it sub-allocates everything from: level data, meshes,
+animations, and decoded asset data on its way to D3D. The default is **850 MB**
+and the engine does not need it.
+
+**Measured on the 2 GB install, relocation on, one area, sessions of 4 to 10
+minutes.** The steady-state column is noisy because the sessions are not
+controlled -- different areas, durations and texture loads. Rescue activity is
+the clean signal, and it orders monotonically.
+
+| pool | steady `below2g` | worst sample | resets | rescue armed |
+|---|---|---|---|---|
+| 850 (stock) | 2.4 MB | 2.4 MB | -- | firing, exhaustion |
+| 800 | 46.2 MB | 14.2 MB | 143 | 14 |
+| **768** | **110.2 MB** | 26.0 MB | 33 | 2 |
+| 704 | 78.2 MB | 78.2 MB | 30 | 0 |
+| 640 | 87 MB | 87 MB | -- | 0 |
+| 512 | -- | -- | -- | **starves** |
+
+**768 is the recommendation.** It is the largest pool that keeps the address
+space genuinely comfortable, which matters because of an asymmetry between the
+two ways this knob goes wrong.
+
+**Both walls, and only one is visible.** Too large and the address space starves:
+DirectX returns `E_OUTOFMEMORY`, `failures=` climbs, the rescue arms, `shape=`
+names the condition. Loud, logged, and there is a policy layer built for it. Too
+small and the engine starves inside its own pool, and **neither of its failure
+modes is detectable from here**:
+
+- At 512 MB one session ran with `creates=4622 failures=0` while the world was
+  visibly missing geometry. The engine skips the asset and carries on.
+- At 512 MB another session **hung** during a level load with `creates=744`
+  frozen, `failures=0`, and 512 MB of contiguous headroom. The engine stops
+  making textures rather than failing to.
+
+Neither reaches `create_texture_2d`, because the engine allocates pool memory for
+decoded asset data before it ever calls D3D. A build that judged the engine
+counters shipped `health=healthy` through both and was removed; the counters are
+now reported without a verdict. **Detecting this properly would mean hooking the
+engine's own pool allocator**, which nobody has located.
+
+So the knob is tuned by eye, not by log: if art is missing or a level load hangs,
+the pool is too small. Bias upward -- toward the failure that announces itself.
+
+**The relationship is a threshold, not a slope.** Going 850 -> 768 returns 82 MB
+of pool and gains 108 MB of largest free block, which no linear model produces. A
+fit built on three points predicted 36 MB at 768 and the answer was 110. Do not
+interpolate this table; measure.
+
+**It is mod-load dependent.** These numbers are one heavily modded install. A
+lighter one will go lower and a heavier one may need more than 768.
 
 ### What the MANAGED duplicate actually is
 
