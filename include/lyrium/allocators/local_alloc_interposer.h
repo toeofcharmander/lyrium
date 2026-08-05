@@ -124,6 +124,79 @@ inline auto WINAPI local_alloc_detour(::UINT flags, ::SIZE_T bytes) -> ::HLOCAL
     return static_cast<::HLOCAL>(served);
 }
 
+// The other two ways a block this arena served can legally come back.
+//
+// LocalAlloc(LMEM_FIXED) returns a process-heap pointer identical to what
+// HeapAlloc(GetProcessHeap(), ...) returns, and the two are interchangeable on
+// Win32. d3d9.dll imports GetProcessHeap, HeapFree and msvcrt's free alongside
+// LocalAlloc and LocalFree, so covering only LocalFree covers one of three
+// doors. The first build did exactly that: it served 40 allocations, saw 5 come
+// back, and the game died with an access violation in nvd3dum.dll -- which is
+// what a heap does when handed a pointer it never allocated, surfacing in
+// whichever module touches it next rather than in the one that mixed them.
+//
+// Each counter is reported separately because which door the pointers arrive at
+// is the finding. If none of them ever sees one, d3d9 is not freeing these
+// itself and the pointer is leaving the module entirely, which is a different
+// problem with a much worse answer.
+using HeapFreeFn = ::BOOL(WINAPI *)(::HANDLE, ::DWORD, ::LPVOID);
+using CrtFreeFn = void(__attribute__((cdecl)) *)(void *);
+
+inline std::atomic<HeapFreeFn> real_heap_free{nullptr};
+inline std::atomic<CrtFreeFn> real_crt_free{nullptr};
+
+inline std::atomic<std::uint64_t> frees_via_local{};
+inline std::atomic<std::uint64_t> frees_via_heap{};
+inline std::atomic<std::uint64_t> frees_via_crt{};
+
+// Returns true when the pointer was ours and has been released.
+[[nodiscard]] inline auto release_if_ours(void *memory) -> bool
+{
+    if (!arena_owns(memory))
+    {
+        return false;
+    }
+
+    const auto lock = std::scoped_lock{local_arena_mutex};
+    return local_arena != nullptr && local_arena->deallocate(memory);
+}
+
+inline auto WINAPI heap_free_detour(::HANDLE heap, ::DWORD flags, ::LPVOID memory) -> ::BOOL
+{
+    const auto original = real_heap_free.load(std::memory_order_relaxed);
+    if (original == nullptr)
+    {
+        return FALSE;
+    }
+
+    if (release_if_ours(memory))
+    {
+        frees_via_heap.fetch_add(1u, std::memory_order_relaxed);
+        arena_frees.fetch_add(1u, std::memory_order_relaxed);
+        return TRUE;
+    }
+
+    return original(heap, flags, memory);
+}
+
+inline auto __attribute__((cdecl)) crt_free_detour(void *memory) -> void
+{
+    const auto original = real_crt_free.load(std::memory_order_relaxed);
+    if (original == nullptr)
+    {
+        return;
+    }
+
+    if (release_if_ours(memory))
+    {
+        frees_via_crt.fetch_add(1u, std::memory_order_relaxed);
+        arena_frees.fetch_add(1u, std::memory_order_relaxed);
+        return;
+    }
+
+    original(memory);
+}
+
 inline auto WINAPI local_free_detour(::HLOCAL memory) -> ::HLOCAL
 {
     const auto original = real_local_free.load(std::memory_order_relaxed);
@@ -142,13 +215,11 @@ inline auto WINAPI local_free_detour(::HLOCAL memory) -> ::HLOCAL
         return original(memory);
     }
 
+    if (release_if_ours(memory))
     {
-        const auto lock = std::scoped_lock{local_arena_mutex};
-        if (local_arena != nullptr && local_arena->deallocate(memory))
-        {
-            arena_frees.fetch_add(1u, std::memory_order_relaxed);
-            return nullptr;
-        }
+        frees_via_local.fetch_add(1u, std::memory_order_relaxed);
+        arena_frees.fetch_add(1u, std::memory_order_relaxed);
+        return nullptr;
     }
 
     // In our range but not something we handed out -- an interior pointer, or a
@@ -180,9 +251,14 @@ inline auto install_local_arena(::HMODULE system_d3d9, std::uint64_t reserve_byt
         return LocalArenaResult{.installed = false, .reserved_bytes = 0u, .reason = "disabled"};
     }
 
+    // Every slot resolved before any is written. A served pointer that can come
+    // back through a door we did not cover is heap corruption, so installing
+    // partially is worse than not installing at all.
     auto **alloc_slot = diag::detail::find_import_slot(system_d3d9, "LocalAlloc");
-    auto **free_slot = diag::detail::find_import_slot(system_d3d9, "LocalFree");
-    if (alloc_slot == nullptr || free_slot == nullptr)
+    auto **local_free_slot = diag::detail::find_import_slot(system_d3d9, "LocalFree");
+    auto **heap_free_slot = diag::detail::find_import_slot(system_d3d9, "HeapFree");
+    auto **crt_free_slot = diag::detail::find_import_slot(system_d3d9, "free");
+    if (alloc_slot == nullptr || local_free_slot == nullptr || heap_free_slot == nullptr || crt_free_slot == nullptr)
     {
         return LocalArenaResult{.installed = false, .reserved_bytes = 0u, .reason = "imports not found"};
     }
@@ -218,33 +294,56 @@ inline auto install_local_arena(::HMODULE system_d3d9, std::uint64_t reserve_byt
     detail::arena_low.store(reinterpret_cast<std::uintptr_t>(base), std::memory_order_relaxed);
     detail::arena_high.store(reinterpret_cast<std::uintptr_t>(base) + reserve_bytes, std::memory_order_relaxed);
 
-    // The free redirect goes in first. The other order leaves a window in which
-    // the arena has handed out a pointer that LocalFree would pass to the real
-    // heap, which never allocated it.
-    auto *previous_free =
-        diag::detail::write_import_slot(free_slot, reinterpret_cast<void *>(&detail::local_free_detour));
-    if (previous_free == nullptr)
+    const auto abandon = [&](const char *reason)
     {
         ::VirtualFree(base, 0, MEM_RELEASE);
         detail::local_arena = nullptr;
         detail::arena_low.store(0u, std::memory_order_relaxed);
         detail::arena_high.store(0u, std::memory_order_relaxed);
-        return LocalArenaResult{.installed = false, .reserved_bytes = 0u, .reason = "free redirect failed"};
+        return LocalArenaResult{.installed = false, .reserved_bytes = 0u, .reason = reason};
+    };
+
+    // Every freeing path goes in before the allocation does. The other order
+    // leaves a window in which the arena has handed out a pointer that one of
+    // these would pass to the real heap, which never allocated it.
+    auto *previous_local_free =
+        diag::detail::write_import_slot(local_free_slot, reinterpret_cast<void *>(&detail::local_free_detour));
+    if (previous_local_free == nullptr)
+    {
+        return abandon("LocalFree redirect failed");
     }
-    detail::real_local_free.store(reinterpret_cast<detail::LocalFreeFn>(previous_free), std::memory_order_relaxed);
+    detail::real_local_free.store(
+        reinterpret_cast<detail::LocalFreeFn>(previous_local_free), std::memory_order_relaxed);
+
+    auto *previous_heap_free =
+        diag::detail::write_import_slot(heap_free_slot, reinterpret_cast<void *>(&detail::heap_free_detour));
+    if (previous_heap_free == nullptr)
+    {
+        static_cast<void>(diag::detail::write_import_slot(local_free_slot, previous_local_free));
+        return abandon("HeapFree redirect failed");
+    }
+    detail::real_heap_free.store(reinterpret_cast<detail::HeapFreeFn>(previous_heap_free), std::memory_order_relaxed);
+
+    auto *previous_crt_free =
+        diag::detail::write_import_slot(crt_free_slot, reinterpret_cast<void *>(&detail::crt_free_detour));
+    if (previous_crt_free == nullptr)
+    {
+        static_cast<void>(diag::detail::write_import_slot(heap_free_slot, previous_heap_free));
+        static_cast<void>(diag::detail::write_import_slot(local_free_slot, previous_local_free));
+        return abandon("free redirect failed");
+    }
+    detail::real_crt_free.store(reinterpret_cast<detail::CrtFreeFn>(previous_crt_free), std::memory_order_relaxed);
 
     auto *previous_alloc =
         diag::detail::write_import_slot(alloc_slot, reinterpret_cast<void *>(&detail::local_alloc_detour));
     if (previous_alloc == nullptr)
     {
-        // Put the free slot back rather than leaving a detour live with nothing
-        // feeding it.
-        static_cast<void>(diag::detail::write_import_slot(free_slot, previous_free));
-        ::VirtualFree(base, 0, MEM_RELEASE);
-        detail::local_arena = nullptr;
-        detail::arena_low.store(0u, std::memory_order_relaxed);
-        detail::arena_high.store(0u, std::memory_order_relaxed);
-        return LocalArenaResult{.installed = false, .reserved_bytes = 0u, .reason = "alloc redirect failed"};
+        // Put every freeing slot back rather than leaving detours live with
+        // nothing feeding them.
+        static_cast<void>(diag::detail::write_import_slot(crt_free_slot, previous_crt_free));
+        static_cast<void>(diag::detail::write_import_slot(heap_free_slot, previous_heap_free));
+        static_cast<void>(diag::detail::write_import_slot(local_free_slot, previous_local_free));
+        return abandon("LocalAlloc redirect failed");
     }
     detail::real_local_alloc.store(reinterpret_cast<detail::LocalAllocFn>(previous_alloc), std::memory_order_relaxed);
 
@@ -270,14 +369,17 @@ inline auto log_local_arena(std::string_view reason) -> void
     }
 
     lyrium::log(
-        "local_arena[{}]: served={}/{}kb largest_served_kb={} live={} freed={} largest_free_kb={} "
-        "full_fallbacks={} passed={} foreign_frees={}",
+        "local_arena[{}]: served={}/{}kb largest_served_kb={} live={} freed={} via_local={} via_heap={} "
+        "via_crt={} largest_free_kb={} full_fallbacks={} passed={} foreign_frees={}",
         reason,
         detail::arena_served.count(),
         detail::arena_served.bytes() / 1024u,
         detail::arena_served.largest() / 1024u,
         live,
         detail::arena_frees.load(std::memory_order_relaxed),
+        detail::frees_via_local.load(std::memory_order_relaxed),
+        detail::frees_via_heap.load(std::memory_order_relaxed),
+        detail::frees_via_crt.load(std::memory_order_relaxed),
         largest / 1024u,
         detail::arena_full_fallbacks.load(std::memory_order_relaxed),
         detail::arena_passed.count(),
