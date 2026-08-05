@@ -246,6 +246,9 @@ auto enable_allocation_watch() -> void
 // about whether and how hard to evict belongs to RescuePolicy, which is tested
 // without any of this.
 
+// Defined below, next to the Reset hook's scope guard.
+[[nodiscard]] auto inside_device_reset() -> bool;
+
 class EngineEvictionBackend final : public lyrium::policy::EvictionBackend
 {
   public:
@@ -261,7 +264,9 @@ class EngineEvictionBackend final : public lyrium::policy::EvictionBackend
 
     [[nodiscard]] auto evict(std::int32_t max_count) -> std::int32_t override
     {
-        return lyrium::dao::emergency_evict(max_count);
+        // Belt and braces: the create path already declines, but this is the
+        // seam that actually runs engine code, so it refuses too.
+        return inside_device_reset() ? 0 : lyrium::dao::emergency_evict(max_count);
     }
 
     [[nodiscard]] auto release_scratch() -> std::uint64_t override
@@ -277,6 +282,10 @@ class EngineEvictionBackend final : public lyrium::policy::EvictionBackend
 
     [[nodiscard]] auto clear_cache() -> bool override
     {
+        if (inside_device_reset())
+        {
+            return false;
+        }
         return lyrium::dao::emergency_clear_texture_cache();
     }
 
@@ -383,6 +392,45 @@ auto note_create_cost(::D3DPOOL pool, std::int64_t elapsed_us) -> void
     }
 }
 
+// True while IDirect3DDevice9::Reset is on this thread's stack.
+//
+// The engine's D3DGraphicsDriver::ResetDevice broadcasts to a registry of
+// D3DResetable objects, and it registers each object from the D3DResetable base
+// constructor and removes it from the base destructor. Anything currently
+// between those points sits in the registry with the abstract vtable installed,
+// where the reset slot is _purecall. Destroying engine textures while that
+// broadcast is running mutates the very vector it iterates, and the engine's
+// driver mutex is recursive so it will not stop us re-entering on this thread.
+//
+// So no rescue may call engine cache-evict or cache-clear with Reset on the
+// stack, however desperate the address space looks.
+thread_local auto in_device_reset = false;
+
+struct ResetScope
+{
+    ResetScope()
+    {
+        in_device_reset = true;
+    }
+    ~ResetScope()
+    {
+        in_device_reset = false;
+    }
+    ResetScope(const ResetScope &) = delete;
+    auto operator=(const ResetScope &) -> ResetScope & = delete;
+};
+
+[[nodiscard]] auto inside_device_reset() -> bool
+{
+    return in_device_reset;
+}
+
+// Set by the Reset hook, consumed on the next EndScene. Sampling and logging are
+// diagnostics, so they can happen a frame later, outside the driver's lock.
+std::atomic<std::uint32_t> reset_purged{};
+std::atomic<bool> reset_report_pending{false};
+std::atomic<std::uint32_t> reset_failed_hr{0u};
+
 auto rescue_parts() -> RescueParts &
 {
     static auto parts = lyrium::NeverDestroyed<RescueParts>{lyrium::policy::RescueConfig{
@@ -412,6 +460,13 @@ auto rescue_stats() -> policy::RescueStats
 }
 
 __declspec(dllexport) ::HRESULT WINAPI IDirect3DDevice9_EndScene_Hook(::PROC orig_func, void *that);
+__declspec(dllexport) ::HRESULT WINAPI IDirect3DDevice9_Present_hook(
+    ::PROC orig_func,
+    void *that,
+    const ::RECT *pSourceRect,
+    const ::RECT *pDestRect,
+    ::HWND hDestWindowOverride,
+    const ::RGNDATA *pDirtyRegion);
 __declspec(dllexport) ::HRESULT WINAPI IDirect3DDevice9_SetStreamSource_hook(
     ::PROC orig_func,
     void *that,
@@ -512,19 +567,25 @@ __declspec(dllexport) ::HRESULT WINAPI IDirect3D9_CreateDevice_hook(
     ::D3DPRESENT_PARAMETERS *pPresentationParameters,
     ::IDirect3DDevice9 **ppReturnedDeviceInterface);
 
-__declspec(dllexport) ::HRESULT WINAPI IDirect3DDevice9_EndScene_Hook(::PROC orig_func, void *that)
+// Present, not EndScene. EndScene closes the scene and returns without doing
+// driver work; Present is where queued GPU work is flushed and the CPU blocks.
+// Timing EndScene across a visibly stuttering session gave 2 ms total over 2237
+// frames with no frame above 527 us, which measured the wrong call rather than
+// exonerating the frame.
+__declspec(dllexport) ::HRESULT WINAPI IDirect3DDevice9_Present_hook(
+    ::PROC orig_func,
+    void *that,
+    const ::RECT *pSourceRect,
+    const ::RECT *pDestRect,
+    ::HWND hDestWindowOverride,
+    const ::RGNDATA *pDirtyRegion)
 {
-    using orig_call_type = OrigFuncType<decltype(&IDirect3DDevice9_EndScene_Hook)>;
+    using orig_call_type = OrigFuncType<decltype(&IDirect3DDevice9_Present_hook)>;
 
-    lyrium::overlay::poll_hotkey();
-    lyrium::overlay::render(reinterpret_cast<::IDirect3DDevice9 *>(that));
-
-    // Times the engine's own EndScene, which is where the driver settles the
-    // frame's outstanding work. If the missing seconds are here rather than in
-    // any lyrium call, the cost is VRAM thrashing inside the runtime.
-    const auto frame_started = lyrium::now_us();
-    const auto result = reinterpret_cast<orig_call_type>(orig_func)(that);
-    const auto elapsed = static_cast<std::uint64_t>(lyrium::now_us() - frame_started);
+    const auto started = lyrium::now_us();
+    const auto res =
+        reinterpret_cast<orig_call_type>(orig_func)(that, pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion);
+    const auto elapsed = static_cast<std::uint64_t>(lyrium::now_us() - started);
 
     lyrium::stats::frames.fetch_add(1u, std::memory_order_relaxed);
     lyrium::stats::frame_us.fetch_add(elapsed, std::memory_order_relaxed);
@@ -538,8 +599,40 @@ __declspec(dllexport) ::HRESULT WINAPI IDirect3DDevice9_EndScene_Hook(::PROC ori
     {
     }
 
+    return res;
+}
+
+__declspec(dllexport) ::HRESULT WINAPI IDirect3DDevice9_EndScene_Hook(::PROC orig_func, void *that)
+{
+    using orig_call_type = OrigFuncType<decltype(&IDirect3DDevice9_EndScene_Hook)>;
+
+    if (reset_report_pending.exchange(false, std::memory_order_acquire))
+    {
+        // Deliberately here rather than in the Reset hook: an address-space walk
+        // measured 13 ms per sample, and two of them ran inside the engine's
+        // driver mutex on every reset. See ResetScope for what that widens.
+        if (const auto purged = reset_purged.exchange(0u, std::memory_order_relaxed); purged > 0u)
+        {
+            lyrium::log("device reset: purged {} idle textures from the recycler", purged);
+        }
+        if (const auto hr = reset_failed_hr.exchange(0u, std::memory_order_relaxed); hr != 0u)
+        {
+            lyrium::log("device reset failed (hr={:#010x}), deferring texture restore", hr);
+        }
+        lyrium::diag::Sampler::instance().sample_now("after_reset");
+    }
+
+    lyrium::overlay::poll_hotkey();
+    lyrium::overlay::render(reinterpret_cast<::IDirect3DDevice9 *>(that));
+
+    // Frame timing moved to Present. EndScene closes the scene and returns
+    // without doing driver work -- measured at 2 ms total across 2237 frames of
+    // a session that stuttered visibly -- so timing it answered nothing.
+    //
     // Sampled once a second rather than per frame: the driver call is not free
-    // and the number moves slowly.
+    // and the number moves slowly. Kept even though VRAM is now ruled out --
+    // 3543 MB free, 3532 MB low-water mark, across a stuttering session -- since
+    // it is the evidence that rules it out and it costs almost nothing.
     static auto last_vram_us = std::int64_t{};
     if (lyrium::now_us() - last_vram_us > 1'000'000)
     {
@@ -554,7 +647,7 @@ __declspec(dllexport) ::HRESULT WINAPI IDirect3DDevice9_EndScene_Hook(::PROC ori
         }
     }
 
-    return result;
+    return reinterpret_cast<orig_call_type>(orig_func)(that);
 }
 
 __declspec(dllexport) ::HRESULT WINAPI IDirect3DDevice9_SetStreamSource_hook(
@@ -707,7 +800,7 @@ __declspec(dllexport) ::HRESULT WINAPI IDirect3DDevice9_CreateTexture_hook(
     const auto original = reinterpret_cast<orig_call_type>(orig_func);
     const auto bytes = lyrium::diag::texture_bytes(Width, Height, 1u, Levels, Format);
 
-    if (rescue_coordinator().consider(bytes, 0u).acted)
+    if (!inside_device_reset() && rescue_coordinator().consider(bytes, 0u).acted)
     {
         lyrium::stats::rescue_preemptive.fetch_add(1u, std::memory_order_relaxed);
     }
@@ -989,16 +1082,30 @@ IDirect3DDevice9_Reset_hook(::PROC orig_func, void *that, ::D3DPRESENT_PARAMETER
 {
     using orig_call_type = OrigFuncType<decltype(&IDirect3DDevice9_Reset_hook)>;
 
+    // Nothing slow, and nothing that runs engine code, may happen here.
+    //
+    // This hook executes inside D3DGraphicsDriver::ResetDevice with the engine's
+    // driver mutex held. That function broadcasts to a registry of D3DResetable
+    // objects, and the engine registers an object into that registry from the
+    // D3DResetable base constructor and removes it from the base destructor --
+    // so any texture, shader or buffer currently between its base constructor
+    // and its most-derived constructor is in the list with the abstract vtable
+    // still installed, where slot 2 is _purecall. A broadcast hitting it lands
+    // in the CRT as R6025, which is the crash reported against this project. The
+    // engine's mutex is recursive and does not prevent it.
+    //
+    // The race is the game's, not ours, and needs no wrapper to exist. But its
+    // window is normally microseconds, and this hook used to hold it open for
+    // 26 ms per reset with two full address-space walks measured at ~13 ms each,
+    // turning a lottery into a near-certainty across the dozens of resets that
+    // alt-tabbing produces. The samples are taken after the hook returns instead;
+    // they are diagnostics and nothing depends on their timing.
+    const auto reset_guard = ResetScope{};
+
     lyrium::overlay::before_device_reset();
     lyrium::before_resettable_texture_reset(reinterpret_cast<::IDirect3DDevice9 *>(that));
 
-    const auto purged = lyrium::TextureRecycler::instance().purge();
-    if (purged > 0u)
-    {
-        lyrium::log("device reset: purged {} idle textures from the recycler", purged);
-    }
-
-    lyrium::diag::Sampler::instance().sample_now("before_reset");
+    reset_purged.store(lyrium::TextureRecycler::instance().purge(), std::memory_order_relaxed);
 
     const auto res = reinterpret_cast<orig_call_type>(orig_func)(that, pPresentationParameters);
 
@@ -1014,11 +1121,10 @@ IDirect3DDevice9_Reset_hook(::PROC orig_func, void *that, ::D3DPRESENT_PARAMETER
     }
     else
     {
-        lyrium::log("device reset failed (hr={:#010x}), deferring texture restore", static_cast<std::uint32_t>(res));
+        reset_failed_hr.store(static_cast<std::uint32_t>(res), std::memory_order_relaxed);
     }
 
-    lyrium::diag::Sampler::instance().sample_now("after_reset");
-
+    reset_report_pending.store(true, std::memory_order_release);
     return res;
 }
 
@@ -1101,6 +1207,7 @@ __declspec(dllexport) ::HRESULT WINAPI IDirect3D9_CreateDevice_hook(
     com_hook.add_hook<27zu>(device, IDirect3DDevice9_CreateIndexBuffer_hook);
     com_hook.add_hook<28zu>(device, IDirect3DDevice9_CreateRenderTarget_hook);
     com_hook.add_hook<31zu>(device, IDirect3DDevice9_UpdateTexture_hook);
+    com_hook.add_hook<17zu>(device, IDirect3DDevice9_Present_hook);
     com_hook.add_hook<42zu>(device, IDirect3DDevice9_EndScene_Hook);
     com_hook.add_hook<60zu>(device, IDirect3DDevice9_CreateStateBlock_hook);
     com_hook.add_hook<64zu>(device, IDirect3DDevice9_GetTexture_hook);
