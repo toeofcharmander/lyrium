@@ -7,11 +7,13 @@
 #include <cstdint>
 #include <cstring>
 #include <string>
+#include <string_view>
 
 #include <psapi.h>
 #include <windows.h>
 
 #include "lyrium/dao/targets.h"
+#include "lyrium/diag/va_region.h"
 #include "lyrium/log.h"
 
 namespace lyrium::diag
@@ -618,6 +620,72 @@ inline auto remove_alloc_watch() -> void
         *slot = reinterpret_cast<void *>(original);
         ::VirtualProtect(slot, sizeof(void *), protection, &protection);
     }
+}
+
+// Where the large allocations actually land.
+//
+// The records above were collected and never read, which is why this hook has
+// never answered anything. The question it exists for: on a large-address-aware
+// process there is a ~2 GB region above the 2 GB line that every session shows
+// completely untouched -- largest_free reads 2,146,115,584 in every sample ever
+// captured -- while the space below grinds down to slivers. If the allocations
+// doing the grinding can be seen, and their caller identified, they can
+// potentially be steered up there instead, which would let textures stay in
+// D3DPOOL_MANAGED and remove the relocation machinery entirely.
+//
+// Read without synchronisation from the sampler thread while the render thread
+// may be appending. A torn record costs one wrong line in a diagnostic; taking a
+// lock on the allocation path would cost far more.
+inline auto report_alloc_records(std::string_view reason) -> void
+{
+    const auto recorded = detail::alloc_record_count.load(std::memory_order_relaxed);
+    if (recorded == 0u)
+    {
+        return;
+    }
+
+    const auto count = recorded < detail::max_alloc_records ? recorded : detail::max_alloc_records;
+    auto below = std::uint32_t{};
+    auto above = std::uint32_t{};
+    auto below_bytes = std::uint64_t{};
+    auto above_bytes = std::uint64_t{};
+    auto largest = std::uint64_t{};
+    auto largest_at = std::uint64_t{};
+
+    for (auto i = std::size_t{0}; i < count; ++i)
+    {
+        const auto &record = detail::alloc_records[i];
+        if (record.result == 0u)
+        {
+            continue;
+        }
+        if (record.result < two_gigabytes)
+        {
+            ++below;
+            below_bytes += record.size;
+        }
+        else
+        {
+            ++above;
+            above_bytes += record.size;
+        }
+        if (record.size > largest)
+        {
+            largest = record.size;
+            largest_at = record.result;
+        }
+    }
+
+    lyrium::log(
+        "alloc[{}]: recorded={} below2g={}/{}kb above2g={}/{}kb largest={}kb@{:#x}",
+        reason,
+        recorded,
+        below,
+        below_bytes / 1024u,
+        above,
+        above_bytes / 1024u,
+        largest / 1024u,
+        largest_at);
 }
 
 }

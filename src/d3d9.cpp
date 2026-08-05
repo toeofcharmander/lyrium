@@ -188,6 +188,11 @@ auto log_ledger_snapshot(std::string_view reason, const lyrium::diag::VaStats &)
         lyrium::stats::pool_override_bytes.load(std::memory_order_relaxed),
         lyrium::stats::pool_reverts.load(std::memory_order_relaxed));
 
+    if (config.allocation_watch)
+    {
+        lyrium::diag::report_alloc_records(reason);
+    }
+
     const auto rescue = rescue_coordinator().stats();
     lyrium::log(
         "rescue[{}]: pressure={} preemptive={} on_failure={} evictions={} clears={} managed={} released={} "
