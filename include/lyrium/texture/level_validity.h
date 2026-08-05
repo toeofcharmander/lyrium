@@ -56,6 +56,13 @@ class LevelValidity
         bits_.store(0u, std::memory_order_release);
     }
 
+    // The whole set at once, for callers that need to act on every valid level
+    // rather than test them one at a time.
+    [[nodiscard]] auto mask() const -> std::uint32_t
+    {
+        return bits_.load(std::memory_order_relaxed);
+    }
+
     [[nodiscard]] auto any_valid() const -> bool
     {
         return bits_.load(std::memory_order_acquire) != 0u;

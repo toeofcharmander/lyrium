@@ -151,7 +151,7 @@ auto log_ledger_snapshot(std::string_view reason, const lyrium::diag::VaStats &)
     lyrium::log(
         "textures[{}]: live={} bytes={} peak={} released={} default={} managed={} systemmem={} scratch={} "
         "unknown={} live_relocated={} live_relocated_bytes={} creates={} failures={} overrides={} "
-        "uploads={} upload_ms={} staging_new={} staging_reused={} "
+        "uploads={} flushes={} upload_ms={} staging_new={} staging_reused={} "
         "locks={} map_ms={} unmap_ms={} sections={} section_ms={} "
         "cre_def={}/{}ms cre_oth={}/{}ms cre_max={}us "
         "override_bytes={} reverts={}",
@@ -171,6 +171,7 @@ auto log_ledger_snapshot(std::string_view reason, const lyrium::diag::VaStats &)
         lyrium::stats::d3d_create_failures.load(std::memory_order_relaxed),
         lyrium::stats::pool_overrides.load(std::memory_order_relaxed),
         lyrium::stats::uploads.load(std::memory_order_relaxed),
+        lyrium::stats::flushes.load(std::memory_order_relaxed),
         lyrium::stats::upload_us.load(std::memory_order_relaxed) / 1000u,
         lyrium::stats::staging_created.load(std::memory_order_relaxed),
         lyrium::stats::staging_reused.load(std::memory_order_relaxed),

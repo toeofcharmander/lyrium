@@ -1,5 +1,6 @@
 #include "lyrium/resettable_texture.h"
 #include "lyrium/com/ref_count.h"
+#include "lyrium/texture/dirty_levels.h"
 #include "lyrium/texture/level_validity.h"
 #include "lyrium/texture/mip_layout.h"
 
@@ -446,8 +447,11 @@ class ResettableTexture final : public ::IDirect3DTexture9
         auto result = D3D_OK;
         if ((flags & D3DLOCK_READONLY) == 0u)
         {
+            // Owed, not uploaded. The write is already in the mapped section,
+            // which is the durable copy; flush_dirty() hands it to the GPU in one
+            // batch when the engine binds the texture. See dirty_levels.h.
             valid_.mark_valid(level);
-            result = upload_level(level, static_cast<const std::byte *>(view));
+            dirty_.mark(level);
         }
         const auto unmap_started = now_us();
         ::UnmapViewOfFile(view);
@@ -482,6 +486,11 @@ class ResettableTexture final : public ::IDirect3DTexture9
         {
             return nullptr;
         }
+
+        // The one point where the GPU copy has to be current: the engine is
+        // about to draw with it. Everything written since the last bind goes up
+        // in a single batch here rather than a call per level at unlock time.
+        flush_dirty();
 
         auto lock = std::scoped_lock{inner_mutex_};
         if (inner_ != nullptr)
@@ -662,7 +671,12 @@ class ResettableTexture final : public ::IDirect3DTexture9
 
         created->SetPriority(priority_.load(std::memory_order_relaxed));
         created->SetAutoGenFilterType(filter_.load(std::memory_order_relaxed));
-        upload_all();
+
+        // A reset discards the GPU-side copy of every level, so everything
+        // holding data is owed again. Deliberately not uploaded here: a reset
+        // restores hundreds of textures at once and most are not drawn in the
+        // next frame, which is exactly the burst that made alt-tab expensive.
+        dirty_.mark_all(valid_.mask());
         return true;
     }
 
@@ -727,24 +741,42 @@ class ResettableTexture final : public ::IDirect3DTexture9
         return result;
     }
 
-    auto upload_all() -> void
+    // Settles every level owed, mapping the section once for the whole batch
+    // rather than once per level.
+    auto flush_dirty() -> void
     {
+        if (!dirty_.any())
+        {
+            return;
+        }
+
+        const auto owed = dirty_.take();
+        if (owed == 0u)
+        {
+            return;
+        }
+
         auto *view = static_cast<const std::byte *>(
             ::MapViewOfFile(mapping_, FILE_MAP_READ, 0u, 0u, static_cast<::SIZE_T>(mapping_size_)));
         if (view == nullptr)
         {
+            // Nothing was uploaded, so the debt is still owed.
+            dirty_.mark_all(owed);
             return;
         }
+
         for (auto level = std::uint32_t{}; level < shape_.levels; ++level)
         {
-            if (valid_.is_valid(level))
+            if ((owed & (std::uint32_t{1} << level)) != 0u)
             {
                 upload_level(level, view);
             }
         }
         ::UnmapViewOfFile(view);
+        stats::flushes.fetch_add(1u, std::memory_order_relaxed);
     }
 
+    texture::DirtyLevels dirty_{};
     com::RefCount references_{1u};
     ::IDirect3DDevice9 *device_;
     CreateTextureFn create_texture_;

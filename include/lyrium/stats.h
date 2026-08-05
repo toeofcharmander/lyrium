@@ -38,6 +38,10 @@ inline std::atomic<std::uint64_t> unmap_us{};
 inline std::atomic<std::uint64_t> mapping_creates{};
 inline std::atomic<std::uint64_t> mapping_create_us{};
 
+// Batched flushes at bind time. uploads divided by flushes is the batching
+// ratio: one flush covering a whole mip chain is the point of the exercise.
+inline std::atomic<std::uint64_t> flushes{};
+
 inline std::atomic<std::uint64_t> uploads{};
 inline std::atomic<std::uint64_t> upload_us{};
 inline std::atomic<std::uint64_t> staging_created{};
