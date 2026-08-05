@@ -15,6 +15,16 @@ inline std::atomic<std::uint64_t> d3d_create_failures{};
 // GPU, how long that took in total, and whether the staging texture was reused
 // or created through the driver. reused vs created is the cutscene-stall
 // metric: every created is a synchronous driver allocation on the load path.
+// The lock path around the upload. Every LockRect maps the whole mip-chain
+// section and every UnlockRect tears it down again, so this is per-lock kernel
+// page-table work that upload_us never covered. Measured because the upload
+// figures came back far too small to explain the stall they were meant to.
+inline std::atomic<std::uint64_t> locks{};
+inline std::atomic<std::uint64_t> map_us{};
+inline std::atomic<std::uint64_t> unmap_us{};
+inline std::atomic<std::uint64_t> mapping_creates{};
+inline std::atomic<std::uint64_t> mapping_create_us{};
+
 inline std::atomic<std::uint64_t> uploads{};
 inline std::atomic<std::uint64_t> upload_us{};
 inline std::atomic<std::uint64_t> staging_created{};

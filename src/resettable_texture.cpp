@@ -395,8 +395,11 @@ class ResettableTexture final : public ::IDirect3DTexture9
             return D3DERR_INVALIDCALL;
         }
 
+        const auto map_started = now_us();
         auto *view = static_cast<std::byte *>(
             ::MapViewOfFile(mapping_, FILE_MAP_ALL_ACCESS, 0u, 0u, static_cast<::SIZE_T>(mapping_size_)));
+        stats::locks.fetch_add(1u, std::memory_order_relaxed);
+        stats::map_us.fetch_add(static_cast<std::uint64_t>(now_us() - map_started), std::memory_order_relaxed);
         if (view == nullptr)
         {
             return E_OUTOFMEMORY;
@@ -446,7 +449,9 @@ class ResettableTexture final : public ::IDirect3DTexture9
             valid_.mark_valid(level);
             result = upload_level(level, static_cast<const std::byte *>(view));
         }
+        const auto unmap_started = now_us();
         ::UnmapViewOfFile(view);
+        stats::unmap_us.fetch_add(static_cast<std::uint64_t>(now_us() - unmap_started), std::memory_order_relaxed);
         return result;
     }
 
@@ -569,6 +574,7 @@ class ResettableTexture final : public ::IDirect3DTexture9
             return;
         }
         const auto size = static_cast<std::uint64_t>(mapping_size_);
+        const auto mapping_started = now_us();
         mapping_ = ::CreateFileMappingW(
             INVALID_HANDLE_VALUE,
             nullptr,
@@ -576,6 +582,9 @@ class ResettableTexture final : public ::IDirect3DTexture9
             static_cast<::DWORD>(size >> 32u),
             static_cast<::DWORD>(size & 0xffffffffu),
             nullptr);
+        stats::mapping_creates.fetch_add(1u, std::memory_order_relaxed);
+        stats::mapping_create_us.fetch_add(
+            static_cast<std::uint64_t>(now_us() - mapping_started), std::memory_order_relaxed);
     }
 
     ~ResettableTexture()
