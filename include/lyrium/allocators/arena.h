@@ -113,10 +113,10 @@ class Arena
             return false;
         }
 
-        auto *block = block_of(static_cast<std::byte *>(allocation));
-        if (block->free)
+        auto *block = const_cast<Block *>(live_block_at(allocation));
+        if (block == nullptr)
         {
-            return true;
+            return false;
         }
         block->free = true;
         --live_;
@@ -134,11 +134,8 @@ class Arena
     // or does not sit in front of the payload.
     [[nodiscard]] auto allocation_size(const void *allocation) const -> std::size_t
     {
-        if (!owns(allocation))
-        {
-            return 0u;
-        }
-        return block_of(const_cast<std::byte *>(static_cast<const std::byte *>(allocation)))->size;
+        const auto *block = live_block_at(allocation);
+        return block != nullptr ? block->size : 0u;
     }
 
     // Serve a new allocation, copy what fits, release the old one. Deliberately
@@ -151,7 +148,7 @@ class Arena
     // caller that handles failure does not lose its data.
     [[nodiscard]] auto reallocate(void *allocation, std::size_t bytes) -> void *
     {
-        if (!owns(allocation) || bytes == 0u)
+        if (live_block_at(allocation) == nullptr || bytes == 0u)
         {
             return nullptr;
         }
@@ -218,6 +215,30 @@ class Arena
     static auto block_of(std::byte *payload) -> Block *
     {
         return reinterpret_cast<Block *>(payload - sizeof(Block));
+    }
+
+    // The block whose payload starts exactly here, or nullptr.
+    //
+    // owns() is a range test and cannot tell a pointer we handed out from an
+    // address partway through one. Taking the header from an interior pointer
+    // reads payload bytes as metadata, then marks them free and coalesces --
+    // silent corruption, and precisely what an interposer must refuse rather than
+    // guess at. O(blocks), and every caller is a free or a size query, never the
+    // allocation fast path.
+    [[nodiscard]] auto live_block_at(const void *allocation) const -> const Block *
+    {
+        if (!owns(allocation))
+        {
+            return nullptr;
+        }
+        for (const auto *block = head_; block != nullptr; block = block->next)
+        {
+            if (payload_of(const_cast<Block *>(block)) == static_cast<const std::byte *>(allocation))
+            {
+                return block->free ? nullptr : block;
+            }
+        }
+        return nullptr;
     }
 
     // Merges forward from the earliest free neighbour, so a free between two

@@ -240,7 +240,10 @@ inline auto NTAPI rtl_reallocate_heap_detour(::PVOID heap, ::ULONG flags, ::PVOI
 // Redirects one named import in one module. Deliberately narrow: only
 // d3d9.dll's HeapAlloc is replaced, so no other module's allocations change
 // hands.
-inline auto redirect_import(::HMODULE module, const char *name, void *replacement, void **previous) -> bool
+// Locates a named import's thunk slot. replacement == nullptr only looks; that
+// is how the installer confirms the redirect will succeed before patching
+// anything else.
+inline auto find_import_slot(::HMODULE module, const char *name, void **previous, void *replacement = nullptr) -> bool
 {
     auto *base = reinterpret_cast<std::uint8_t *>(module);
     const auto *dos = reinterpret_cast<const ::IMAGE_DOS_HEADER *>(base);
@@ -285,7 +288,10 @@ inline auto redirect_import(::HMODULE module, const char *name, void *replacemen
                 return false;
             }
             *previous = reinterpret_cast<void *>(addresses->u1.Function);
-            addresses->u1.Function = reinterpret_cast<::DWORD>(replacement);
+            if (replacement != nullptr)
+            {
+                addresses->u1.Function = reinterpret_cast<::DWORD>(replacement);
+            }
             ::VirtualProtect(addresses, sizeof(*addresses), protection, &protection);
             return true;
         }
@@ -373,6 +379,14 @@ inline auto install_heap_interposer(std::uint64_t reserve_bytes, std::size_t thr
     detail::interpose_threshold.store(threshold_bytes, std::memory_order_relaxed);
     detail::process_heap.store(::GetProcessHeap(), std::memory_order_relaxed);
 
+    // Everything is resolved and verified before a single byte is patched.
+    //
+    // The ntdll hooks used to go in first with the d3d9 import redirect last, so
+    // a failure at that final step -- system d3d9 not loaded, or its import table
+    // not naming HeapAlloc -- left a process-wide RtlFreeHeap patch permanently
+    // installed serving an arena that could never receive an allocation. Cost on
+    // every free in the process, for the lifetime, while reporting "not
+    // installed".
     auto *ntdll = ::GetModuleHandleA("ntdll.dll");
     auto *rtl_free = ntdll != nullptr ? ::GetProcAddress(ntdll, "RtlFreeHeap") : nullptr;
     if (rtl_free == nullptr)
@@ -392,6 +406,19 @@ inline auto install_heap_interposer(std::uint64_t reserve_bytes, std::size_t thr
     // All three go in before a single allocation is diverted. Every operation
     // legal on a HeapAlloc pointer must already route through us, or an arena
     // pointer could reach a real implementation that has never seen its address.
+    auto *d3d9 = ::GetModuleHandleA("d3d9.dll");
+    if (d3d9 == nullptr)
+    {
+        result.reason = "system d3d9 not loaded yet";
+        return result;
+    }
+    auto *probe = static_cast<void *>(nullptr);
+    if (!detail::find_import_slot(d3d9, "HeapAlloc", &probe))
+    {
+        result.reason = "d3d9 HeapAlloc import not found";
+        return result;
+    }
+
     auto *trampoline = static_cast<void *>(nullptr);
     if (!detail::install_inline_hook(
             reinterpret_cast<void *>(rtl_free), reinterpret_cast<void *>(&detail::rtl_free_heap_detour), &trampoline))
@@ -422,17 +449,11 @@ inline auto install_heap_interposer(std::uint64_t reserve_bytes, std::size_t thr
     detail::rtl_reallocate_heap_original.store(
         reinterpret_cast<detail::RtlReAllocateHeapFn>(trampoline), std::memory_order_relaxed);
 
-    auto *d3d9 = ::GetModuleHandleA("d3d9.dll");
-    if (d3d9 == nullptr)
-    {
-        result.reason = "system d3d9 not loaded yet";
-        return result;
-    }
-
     auto *previous = static_cast<void *>(nullptr);
-    if (!detail::redirect_import(d3d9, "HeapAlloc", reinterpret_cast<void *>(&detail::heap_alloc_detour), &previous))
+    if (!detail::find_import_slot(d3d9, "HeapAlloc", &previous, reinterpret_cast<void *>(&detail::heap_alloc_detour)))
     {
-        result.reason = "d3d9 HeapAlloc import not found";
+        // Confirmed present above, before anything was patched.
+        result.reason = "d3d9 HeapAlloc import vanished between check and patch";
         return result;
     }
     detail::heap_alloc_original.store(reinterpret_cast<detail::HeapAllocFn>(previous), std::memory_order_relaxed);

@@ -273,3 +273,36 @@ TEST(Arena, AFailedReallocateLeavesTheOriginalAlone)
     EXPECT_EQ(p[0], std::byte{0xab});
     EXPECT_GE(arena.allocation_size(p), 8 * kb);
 }
+
+// owns() is a range test, so it answers true for an address in the middle of a
+// live allocation as well as for a block start. Freeing through such a pointer
+// used to read a header sixteen bytes before it -- which is payload, not
+// metadata -- and then mark it free and coalesce, corrupting the arena silently.
+// A pointer that is inside the range but is not something we handed out must be
+// refused, exactly like a foreign one.
+TEST(Arena, DeallocatingAnInteriorPointerIsRefused)
+{
+    auto region = FixedRegion{1 * mb};
+    auto arena = Arena{region.base(), region.size()};
+
+    auto *p = static_cast<std::byte *>(arena.allocate(64 * kb));
+    ASSERT_NE(p, nullptr);
+    ASSERT_TRUE(arena.owns(p + 32 * kb)) << "the range test alone cannot tell these apart";
+
+    EXPECT_FALSE(arena.deallocate(p + 32 * kb));
+    EXPECT_EQ(arena.live_allocations(), 1u) << "the real allocation must be untouched";
+
+    EXPECT_TRUE(arena.deallocate(p));
+}
+
+TEST(Arena, SizeOfAnInteriorPointerIsNotReported)
+{
+    auto region = FixedRegion{1 * mb};
+    auto arena = Arena{region.base(), region.size()};
+
+    auto *p = static_cast<std::byte *>(arena.allocate(64 * kb));
+    ASSERT_NE(p, nullptr);
+
+    EXPECT_EQ(arena.allocation_size(p + 1024), 0u);
+    EXPECT_EQ(arena.reallocate(p + 1024, 4 * kb), nullptr);
+}
