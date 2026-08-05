@@ -41,11 +41,18 @@ namespace lyrium
 // 3. Anything the arena cannot serve falls through to the real HeapAlloc, so a
 //    full arena degrades to the behaviour that existed before this.
 //
-// The residual hazard, stated rather than hidden: an arena pointer has no heap
-// header in front of it. Code that reads ((HEAP_ENTRY*)ptr)[-1] -- heap walking,
-// some validation paths -- gets garbage, and that corrupts rather than crashes.
-// Nothing in d3d9.dll's import table suggests it does this, but an import table
-// cannot prove a negative. This is why the whole thing is off by default.
+// Imitating an NT heap header is unnecessary because the whole API path is
+// owned. An arena pointer carries our own metadata -- Arena::Block, reached by
+// payload minus its size -- and no caller ever has to read a header itself: it
+// asks RtlSizeHeap, resizes with RtlReAllocateHeap, or releases with
+// RtlFreeHeap, and all three arrive here first. Every operation Windows
+// documents as legal on a HeapAlloc pointer is intercepted.
+//
+// What remains is narrower: code which bypasses the documented API and does raw
+// header arithmetic, which is heap-walking and validation territory rather than
+// normal operation. Nothing in d3d9.dll's imports suggests it, and an import
+// table cannot prove a negative, so this stays off by default -- but the
+// residual risk is a bypass of the API, not a gap in it.
 
 namespace detail
 {
@@ -58,15 +65,36 @@ inline std::atomic<std::uint64_t> interposed_bytes{};
 inline std::atomic<std::uint64_t> interposed_frees{};
 inline std::atomic<std::uint64_t> passed_through{};
 inline std::atomic<std::uint64_t> arena_full_fallbacks{};
-inline std::atomic<std::uint64_t> foreign_frees_seen{};
+
+// The arena's extent, published once at install and never changed after. Kept
+// out of the mutex on purpose: RtlFreeHeap is where every free in the process
+// funnels -- the engine, PhysX, CUDA, the CRT -- and the overwhelming majority
+// of those pointers are not ours. Taking a lock to discover that would put a
+// contended mutex on the hottest path in the process, which is the mistake the
+// allocation watch already made once with a stack walk and a returned stutter.
+inline std::atomic<std::uintptr_t> arena_low{0};
+inline std::atomic<std::uintptr_t> arena_high{0};
+
+// Two loads and two comparisons, no lock. Exact rather than approximate: the
+// region is contiguous and exclusively ours, so an address inside it cannot
+// belong to anyone else and one outside it cannot be ours.
+[[nodiscard]] inline auto in_arena_range(const void *allocation) -> bool
+{
+    const auto address = reinterpret_cast<std::uintptr_t>(allocation);
+    return address >= arena_low.load(std::memory_order_relaxed) && address < arena_high.load(std::memory_order_relaxed);
+}
 
 inline std::atomic<std::size_t> interpose_threshold{512u * 1024u};
 
 using HeapAllocFn = ::LPVOID(WINAPI *)(::HANDLE, ::DWORD, ::SIZE_T);
 using RtlFreeHeapFn = ::BOOLEAN(NTAPI *)(::PVOID, ::ULONG, ::PVOID);
+using RtlSizeHeapFn = ::SIZE_T(NTAPI *)(::PVOID, ::ULONG, ::PVOID);
+using RtlReAllocateHeapFn = ::PVOID(NTAPI *)(::PVOID, ::ULONG, ::PVOID, ::SIZE_T);
 
 inline std::atomic<HeapAllocFn> heap_alloc_original{nullptr};
 inline std::atomic<RtlFreeHeapFn> rtl_free_heap_original{nullptr};
+inline std::atomic<RtlSizeHeapFn> rtl_size_heap_original{nullptr};
+inline std::atomic<RtlReAllocateHeapFn> rtl_reallocate_heap_original{nullptr};
 inline std::atomic<::HANDLE> process_heap{nullptr};
 
 // Never called with the arena lock held by this thread; the arena does no
@@ -132,18 +160,81 @@ inline auto WINAPI heap_alloc_detour(::HANDLE heap, ::DWORD flags, ::SIZE_T byte
 // did not exist.
 inline auto NTAPI rtl_free_heap_detour(::PVOID heap, ::ULONG flags, ::PVOID allocation) -> ::BOOLEAN
 {
-    if (allocation != nullptr && arena_owns(allocation))
+    if (in_arena_range(allocation) && arena_deallocate(allocation))
     {
-        if (arena_deallocate(allocation))
+        interposed_frees.fetch_add(1u, std::memory_order_relaxed);
+        return TRUE;
+    }
+
+    const auto original = rtl_free_heap_original.load(std::memory_order_relaxed);
+    return original != nullptr ? original(heap, flags, allocation) : FALSE;
+}
+
+// The two calls that made an NT heap header look necessary. They are why
+// intercepting only allocation and free is not enough: an arena pointer is a
+// HeapAlloc return like any other, and any module d3d9 hands it to may ask its
+// size or resize it. Owning these means the answer comes from our own metadata
+// and no header ever has to be imitated.
+inline auto NTAPI rtl_size_heap_detour(::PVOID heap, ::ULONG flags, ::PVOID allocation) -> ::SIZE_T
+{
+    if (in_arena_range(allocation))
+    {
+        auto lock = std::scoped_lock{arena_mutex};
+        if (arena_instance != nullptr)
         {
-            interposed_frees.fetch_add(1u, std::memory_order_relaxed);
-            return TRUE;
+            return static_cast<::SIZE_T>(arena_instance->allocation_size(allocation));
         }
     }
 
-    foreign_frees_seen.fetch_add(1u, std::memory_order_relaxed);
-    const auto original = rtl_free_heap_original.load(std::memory_order_relaxed);
-    return original != nullptr ? original(heap, flags, allocation) : FALSE;
+    const auto original = rtl_size_heap_original.load(std::memory_order_relaxed);
+    return original != nullptr ? original(heap, flags, allocation) : 0u;
+}
+
+inline auto NTAPI rtl_reallocate_heap_detour(::PVOID heap, ::ULONG flags, ::PVOID allocation, ::SIZE_T bytes) -> ::PVOID
+{
+    if (in_arena_range(allocation))
+    {
+        auto *moved = static_cast<void *>(nullptr);
+        {
+            auto lock = std::scoped_lock{arena_mutex};
+            if (arena_instance != nullptr)
+            {
+                moved = arena_instance->reallocate(allocation, bytes);
+            }
+        }
+        if (moved != nullptr)
+        {
+            interposed_allocations.fetch_add(1u, std::memory_order_relaxed);
+            return moved;
+        }
+
+        // The arena could not serve the new size. Move the allocation out to the
+        // real heap rather than failing, so the caller keeps a valid pointer
+        // either way and the arena simply stops holding this one.
+        const auto original_alloc = heap_alloc_original.load(std::memory_order_relaxed);
+        if (original_alloc == nullptr)
+        {
+            return nullptr;
+        }
+
+        auto existing = std::size_t{0};
+        {
+            auto lock = std::scoped_lock{arena_mutex};
+            existing = arena_instance != nullptr ? arena_instance->allocation_size(allocation) : 0u;
+        }
+
+        auto *escaped = original_alloc(process_heap.load(std::memory_order_relaxed), flags, bytes);
+        if (escaped != nullptr)
+        {
+            std::memcpy(escaped, allocation, existing < bytes ? existing : bytes);
+            static_cast<void>(arena_deallocate(allocation));
+            arena_full_fallbacks.fetch_add(1u, std::memory_order_relaxed);
+        }
+        return escaped;
+    }
+
+    const auto original = rtl_reallocate_heap_original.load(std::memory_order_relaxed);
+    return original != nullptr ? original(heap, flags, allocation, bytes) : nullptr;
 }
 
 // Redirects one named import in one module. Deliberately narrow: only
@@ -275,6 +366,10 @@ inline auto install_heap_interposer(std::uint64_t reserve_bytes, std::size_t thr
         static auto arena = Arena{region, static_cast<std::size_t>(reserve_bytes)};
         detail::arena_instance = &arena;
     }
+    detail::arena_low.store(reinterpret_cast<std::uintptr_t>(region), std::memory_order_relaxed);
+    detail::arena_high.store(
+        reinterpret_cast<std::uintptr_t>(region) + static_cast<std::uintptr_t>(reserve_bytes),
+        std::memory_order_relaxed);
     detail::interpose_threshold.store(threshold_bytes, std::memory_order_relaxed);
     detail::process_heap.store(::GetProcessHeap(), std::memory_order_relaxed);
 
@@ -286,6 +381,17 @@ inline auto install_heap_interposer(std::uint64_t reserve_bytes, std::size_t thr
         return result;
     }
 
+    auto *rtl_size = ::GetProcAddress(ntdll, "RtlSizeHeap");
+    auto *rtl_realloc = ::GetProcAddress(ntdll, "RtlReAllocateHeap");
+    if (rtl_size == nullptr || rtl_realloc == nullptr)
+    {
+        result.reason = "RtlSizeHeap or RtlReAllocateHeap not found";
+        return result;
+    }
+
+    // All three go in before a single allocation is diverted. Every operation
+    // legal on a HeapAlloc pointer must already route through us, or an arena
+    // pointer could reach a real implementation that has never seen its address.
     auto *trampoline = static_cast<void *>(nullptr);
     if (!detail::install_inline_hook(
             reinterpret_cast<void *>(rtl_free), reinterpret_cast<void *>(&detail::rtl_free_heap_detour), &trampoline))
@@ -295,6 +401,26 @@ inline auto install_heap_interposer(std::uint64_t reserve_bytes, std::size_t thr
     }
     detail::rtl_free_heap_original.store(
         reinterpret_cast<detail::RtlFreeHeapFn>(trampoline), std::memory_order_relaxed);
+
+    if (!detail::install_inline_hook(
+            reinterpret_cast<void *>(rtl_size), reinterpret_cast<void *>(&detail::rtl_size_heap_detour), &trampoline))
+    {
+        result.reason = "RtlSizeHeap hook failed";
+        return result;
+    }
+    detail::rtl_size_heap_original.store(
+        reinterpret_cast<detail::RtlSizeHeapFn>(trampoline), std::memory_order_relaxed);
+
+    if (!detail::install_inline_hook(
+            reinterpret_cast<void *>(rtl_realloc),
+            reinterpret_cast<void *>(&detail::rtl_reallocate_heap_detour),
+            &trampoline))
+    {
+        result.reason = "RtlReAllocateHeap hook failed";
+        return result;
+    }
+    detail::rtl_reallocate_heap_original.store(
+        reinterpret_cast<detail::RtlReAllocateHeapFn>(trampoline), std::memory_order_relaxed);
 
     auto *d3d9 = ::GetModuleHandleA("d3d9.dll");
     if (d3d9 == nullptr)

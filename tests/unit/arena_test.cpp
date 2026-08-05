@@ -174,3 +174,102 @@ TEST(Arena, ReportsWhatItIsHolding)
     arena.deallocate(b);
     EXPECT_EQ(arena.live_allocations(), 0u);
 }
+
+// Owning the whole API path is what removes the need to imitate an NT heap
+// header. A caller asking an arena pointer its size must get the real answer
+// from our own metadata, not a reading of a header that was never written.
+TEST(Arena, ReportsTheSizeOfAnAllocationItOwns)
+{
+    auto region = FixedRegion{1 * mb};
+    auto arena = Arena{region.base(), region.size()};
+
+    auto *p = arena.allocate(100 * kb);
+    ASSERT_NE(p, nullptr);
+
+    EXPECT_GE(arena.allocation_size(p), 100 * kb) << "must be at least what was asked for";
+    EXPECT_LT(arena.allocation_size(p), 101 * kb) << "and not wildly more, or the rounding is wrong";
+}
+
+TEST(Arena, ReportsNoSizeForAPointerItDoesNotOwn)
+{
+    auto region = FixedRegion{1 * mb};
+    auto arena = Arena{region.base(), region.size()};
+    auto foreign = std::byte{};
+
+    EXPECT_EQ(arena.allocation_size(&foreign), 0u);
+    EXPECT_EQ(arena.allocation_size(nullptr), 0u);
+}
+
+// Growing must preserve the bytes, since the caller keeps using the contents.
+TEST(Arena, ReallocatePreservesContentsWhenGrowing)
+{
+    auto region = FixedRegion{1 * mb};
+    auto arena = Arena{region.base(), region.size()};
+
+    auto *first = static_cast<std::byte *>(arena.allocate(4 * kb));
+    ASSERT_NE(first, nullptr);
+    for (auto i = std::size_t{0}; i < 4 * kb; ++i)
+    {
+        first[i] = static_cast<std::byte>(i & 0xffu);
+    }
+
+    auto *grown = static_cast<std::byte *>(arena.reallocate(first, 16 * kb));
+    ASSERT_NE(grown, nullptr);
+    EXPECT_GE(arena.allocation_size(grown), 16 * kb);
+
+    for (auto i = std::size_t{0}; i < 4 * kb; ++i)
+    {
+        ASSERT_EQ(grown[i], static_cast<std::byte>(i & 0xffu)) << "byte " << i << " was lost in the move";
+    }
+}
+
+// Shrinking keeps the leading bytes and must not read past the new size.
+TEST(Arena, ReallocatePreservesContentsWhenShrinking)
+{
+    auto region = FixedRegion{1 * mb};
+    auto arena = Arena{region.base(), region.size()};
+
+    auto *first = static_cast<std::byte *>(arena.allocate(16 * kb));
+    ASSERT_NE(first, nullptr);
+    for (auto i = std::size_t{0}; i < 16 * kb; ++i)
+    {
+        first[i] = static_cast<std::byte>((i * 7u) & 0xffu);
+    }
+
+    auto *shrunk = static_cast<std::byte *>(arena.reallocate(first, 2 * kb));
+    ASSERT_NE(shrunk, nullptr);
+
+    for (auto i = std::size_t{0}; i < 2 * kb; ++i)
+    {
+        ASSERT_EQ(shrunk[i], static_cast<std::byte>((i * 7u) & 0xffu));
+    }
+}
+
+// A foreign pointer must be refused rather than moved, exactly as deallocate
+// refuses it: the caller then passes it to the real reallocator.
+TEST(Arena, ReallocateRefusesAPointerItDoesNotOwn)
+{
+    auto region = FixedRegion{1 * mb};
+    auto arena = Arena{region.base(), region.size()};
+    auto foreign = std::byte{};
+
+    EXPECT_EQ(arena.reallocate(&foreign, 1 * kb), nullptr);
+    EXPECT_EQ(arena.reallocate(nullptr, 1 * kb), nullptr);
+}
+
+// Failing to grow must leave the original allocation intact and usable, or a
+// caller that handles the failure gracefully loses its data anyway.
+TEST(Arena, AFailedReallocateLeavesTheOriginalAlone)
+{
+    auto region = FixedRegion{64 * kb};
+    auto arena = Arena{region.base(), region.size()};
+
+    auto *p = static_cast<std::byte *>(arena.allocate(8 * kb));
+    ASSERT_NE(p, nullptr);
+    p[0] = std::byte{0xab};
+
+    EXPECT_EQ(arena.reallocate(p, 1 * mb), nullptr);
+
+    EXPECT_EQ(p[0], std::byte{0xab});
+    EXPECT_GE(arena.allocation_size(p), 8 * kb);
+}

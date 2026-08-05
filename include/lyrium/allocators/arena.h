@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <cstring>
 
 #include <new>
 
@@ -122,6 +123,50 @@ class Arena
 
         coalesce(block->prev != nullptr && block->prev->free ? block->prev : block);
         return true;
+    }
+
+    // The size of an allocation we own, from our own metadata. Zero for
+    // anything else, which the caller reads as "not mine, ask the real heap".
+    //
+    // This is the operation that makes imitating an NT heap header unnecessary.
+    // A caller never needs to read a header itself; it asks, and owning the
+    // question means the answer comes from Block::size regardless of what does
+    // or does not sit in front of the payload.
+    [[nodiscard]] auto allocation_size(const void *allocation) const -> std::size_t
+    {
+        if (!owns(allocation))
+        {
+            return 0u;
+        }
+        return block_of(const_cast<std::byte *>(static_cast<const std::byte *>(allocation)))->size;
+    }
+
+    // Serve a new allocation, copy what fits, release the old one. Deliberately
+    // not growing in place: allocate-copy-free is correct for every case, and an
+    // in-place path would be an optimisation for a call the D3D9 runtime does not
+    // make -- it imports neither HeapReAlloc nor HeapSize.
+    //
+    // Returns nullptr both for a pointer we do not own and for a request we
+    // cannot serve, and in the second case the original is left untouched, so a
+    // caller that handles failure does not lose its data.
+    [[nodiscard]] auto reallocate(void *allocation, std::size_t bytes) -> void *
+    {
+        if (!owns(allocation) || bytes == 0u)
+        {
+            return nullptr;
+        }
+
+        const auto existing = allocation_size(allocation);
+        auto *replacement = allocate(bytes);
+        if (replacement == nullptr)
+        {
+            return nullptr;
+        }
+
+        const auto carried = existing < bytes ? existing : bytes;
+        std::memcpy(replacement, allocation, carried);
+        static_cast<void>(deallocate(allocation));
+        return replacement;
     }
 
     [[nodiscard]] auto live_allocations() const -> std::size_t
