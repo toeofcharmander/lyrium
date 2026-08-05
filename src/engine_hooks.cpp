@@ -719,6 +719,14 @@ auto texture_cache_known() -> bool
     return texture_cache_ptr.load(std::memory_order_relaxed) != nullptr;
 }
 
+auto cache_pending_releases() -> std::int32_t
+{
+    auto memory = std::int32_t{};
+    auto pending = std::int32_t{};
+    const auto *cache = texture_cache_ptr.load(std::memory_order_relaxed);
+    return cache_snapshot(cache, memory, pending) ? pending : 0;
+}
+
 auto emergency_evict(int max_count) -> int
 {
     auto *cache = const_cast<void *>(texture_cache_ptr.load(std::memory_order_relaxed));

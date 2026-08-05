@@ -39,6 +39,12 @@ auto emergency_clear_texture_cache() -> bool;
 
 auto texture_cache_known() -> bool;
 
+// Just the pending-release count, without assembling an EngineState. This runs
+// on every texture creation through the rescue probe, and engine_state() builds
+// a twenty-field struct and reads several counters to answer one question.
+// Returns 0 when the cache is not readable, which reads as "nothing to evict".
+auto cache_pending_releases() -> std::int32_t;
+
 struct EngineState
 {
     const void *texture_cache;

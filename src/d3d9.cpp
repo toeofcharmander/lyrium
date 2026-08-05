@@ -224,8 +224,7 @@ class EngineEvictionBackend final : public lyrium::policy::EvictionBackend
 
     [[nodiscard]] auto pending_releases() const -> std::int32_t override
     {
-        const auto state = lyrium::dao::engine_state();
-        return state.cache_readable ? state.pending_releases : 0;
+        return lyrium::dao::cache_pending_releases();
     }
 
     [[nodiscard]] auto evict(std::int32_t max_count) -> std::int32_t override
