@@ -73,7 +73,6 @@ struct RescueConfig
     // Pressure that survives repeated trims is itself the evidence that trimming
     // is not reclaiming enough.
     std::uint32_t preemptive_escalate_after{2u};
-    std::uint32_t preemptive_clear_after{4u};
 
     // Bounded eviction. The preemptive path takes a batch; the failure path
     // escalates from here and is never bounded away from acting.
@@ -270,25 +269,36 @@ class RescuePolicy
         if (inputs.consecutive_preemptive >= config_.preemptive_escalate_after)
         {
             // Deliberately ahead of the pending_releases gate: with nothing
-            // queued a bounded evict is a no-op, but the scratch pools and a
-            // cache clear reclaim regardless, and that is exactly the state
-            // where trimming has already failed to help.
+            // queued a bounded evict is a no-op, but the scratch pools reclaim
+            // regardless, and that is exactly the state where trimming has
+            // already failed to help.
             //
-            // No EvictManagedResources here, ever: it frees video memory while
-            // the starving resource is the address space below 2 GB -- a live
-            // session watched two managed evictions leave 12 MB of headroom
-            // completely unmoved -- and forcing every managed texture to
-            // re-upload mid-scene is itself a stutter. It remains on the
-            // failure path, where a create may genuinely be short of VRAM.
-            const auto clear = inputs.consecutive_preemptive >= config_.preemptive_clear_after;
+            // The preemptive path stops here. It does not clear the engine's
+            // cache and it does not evict managed resources, for two separate
+            // reasons that both come from live sessions.
+            //
+            // Managed eviction frees video memory while the starving resource is
+            // the address space; two of them left 12 MB of headroom completely
+            // unmoved.
+            //
+            // A full clear destroys hundreds of engine textures at once, and
+            // every ~D3DResetable installs the abstract vtable -- _purecall in
+            // the reset slot -- before unregistering, which is the game's own
+            // race. Six sessions across both install types recorded zero failed
+            // allocations, including a 2 GB run that reached 12 MB of headroom
+            // and escalated to two clears and still died of that race. So the
+            // clear has never been observed preventing anything, while being the
+            // most disruptive thing available to the engine's object graph.
+            //
+            // Both remain on the failure path, where a create has actually
+            // failed and there is nothing left to lose.
             return RescuePlan{
-                .action = clear ? EvictAction::clear_cache : EvictAction::evict_cache,
-                .max_count = batch_for(clear ? 2u : 1u),
+                .action = EvictAction::evict_cache,
+                .max_count = batch_for(1u),
                 .flush_scratch = true,
                 .enters_pressure = true,
                 .leaves_pressure = false,
-                .reason = clear ? "preemptive: pressure survived repeated eviction, clearing cache"
-                                : "preemptive: pressure sustained, flushing scratch pools",
+                .reason = "preemptive: pressure sustained, trimming and flushing scratch pools",
             };
         }
 

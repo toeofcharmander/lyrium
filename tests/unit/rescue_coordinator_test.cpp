@@ -529,7 +529,11 @@ TEST(RescueCoordinator, ThePreemptiveLadderNeverEvictsManagedResources)
 
     EXPECT_EQ(f.backend.managed_calls, 0);
     EXPECT_GT(f.backend.scratch_calls, 0) << "the scratch pools are the cheapest space there is to give back";
-    EXPECT_GT(f.backend.clear_calls, 0) << "persistent pressure must still end in the cache clear";
+
+    // This previously required persistent pressure to end in a cache clear. That
+    // requirement was deliberately withdrawn: see
+    // ThePreemptiveLadderNeverClearsTheWholeCache for the sessions behind it.
+    EXPECT_EQ(f.backend.clear_calls, 0);
 }
 
 // The diagnosis is recorded, not acted on: a session log should be able to say
@@ -585,4 +589,46 @@ TEST(RescueCoordinator, TheLargestRequestSeenOnlyGrows)
     coordinator.consider(1u * mb, 0u);
 
     EXPECT_EQ(coordinator.stats().largest_request_bytes, 19u * mb);
+}
+
+// A full cache clear destroys hundreds of engine textures at once, and every
+// ~D3DResetable installs the abstract vtable -- with _purecall in the reset slot
+// -- before unregistering. That is the game's own race, and doing this near a
+// device reset feeds it directly.
+//
+// Six sessions across both install types have recorded zero failed allocations,
+// including a 2 GB run that reached 12 MB of headroom, so the preemptive clear
+// has never been observed preventing anything. It stays on the failure path,
+// where a create has actually failed and there is nothing left to lose.
+TEST(RescueCoordinator, ThePreemptiveLadderNeverClearsTheWholeCache)
+{
+    Fixture f{};
+    auto coordinator = f.make();
+    f.probe.set(20u * mb);
+    f.backend.evict_reclaims_nothing = true;
+
+    for (auto i = 0; i < 12; ++i)
+    {
+        coordinator.consider(4u * mb, 0u);
+        f.clock.advance(100'000);
+    }
+
+    EXPECT_EQ(f.backend.clear_calls, 0) << "a preemptive rescue cleared the engine's whole texture cache";
+    EXPECT_GT(f.backend.scratch_calls, 0) << "and it must still surrender its own scratch under sustained pressure";
+}
+
+// The failure path is untouched: a create that has actually failed still
+// escalates all the way.
+TEST(RescueCoordinator, AFailedCreateStillReachesTheFullClear)
+{
+    Fixture f{};
+    auto coordinator = f.make();
+    f.probe.set(1u * mb);
+    f.backend.evict_reclaims_nothing = true;
+
+    coordinator.consider(4u * mb, 1u);
+    coordinator.consider(4u * mb, 2u);
+    coordinator.consider(4u * mb, 3u);
+
+    EXPECT_GT(f.backend.clear_calls, 0);
 }

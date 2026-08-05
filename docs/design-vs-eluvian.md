@@ -69,6 +69,17 @@ That last step is the crux. The old code *contained* `clear_cache()` and never
 once called it. So the worst case of the new policy is stronger than the old
 policy's normal case.
 
+**Amended after live testing.** The escalation above is the *failure* path, and it
+still terminates there. The preemptive path no longer reaches a full cache clear,
+because six instrumented sessions across both install types recorded **zero failed
+allocations** -- including a 2 GB run that fell to 12 MB of largest free block,
+escalated to two clears, and died anyway of the engine's own pure-virtual reset
+race rather than of memory. Clearing the cache destroys hundreds of engine
+textures at once, and each `~D3DResetable` installs the abstract vtable before
+unregistering, which feeds that race directly. So the clear buys nothing we have
+ever measured and costs exposure to the thing actually killing sessions. It stays
+where a create has genuinely failed and there is nothing left to lose.
+
 ## Everything else
 
 | Area | eluvian | lyrium |
