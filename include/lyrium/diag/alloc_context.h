@@ -1,5 +1,7 @@
 #pragma once
 
+#include <array>
+#include <atomic>
 #include <cstdint>
 
 namespace lyrium::diag
@@ -73,6 +75,66 @@ class AllocContextScope
   private:
     AllocContext *slot_;
     AllocContext previous_;
+};
+
+// The hook window currently open on this thread. Thread-local because two render
+// threads must not see each other's, and because reading it costs nothing.
+//
+// Written only by AllocContextScope from lyrium's own hooks, read only by the
+// allocation detours, and then only for allocations already past the threshold.
+inline auto current_alloc_context() -> AllocContext &
+{
+    static thread_local auto context = AllocContext::none;
+    return context;
+}
+
+// Per-context totals for the whole session.
+//
+// The detailed allocation records are capped at 256, and a live session filled
+// every one of them between startup and the first five-second sample: the entire
+// session after load-in was recorded nowhere, which is exactly the part where
+// the space fragments. These are counters rather than records, so they cost an
+// atomic add on an allocation already past the size threshold, and they never
+// fill.
+//
+// Relaxed ordering throughout. These are read once every few seconds by the
+// sampler thread for a log line, and a count that trails an allocation by a few
+// nanoseconds costs nothing while ordering them would cost on every one.
+class AllocContextTotals
+{
+  public:
+    auto note(AllocContext context, std::uint64_t bytes) -> void
+    {
+        const auto slot = static_cast<std::uint32_t>(context) % alloc_context_count;
+
+        counts_[slot].fetch_add(1u, std::memory_order_relaxed);
+        bytes_[slot].fetch_add(bytes, std::memory_order_relaxed);
+
+        auto seen = largest_[slot].load(std::memory_order_relaxed);
+        while (bytes > seen && !largest_[slot].compare_exchange_weak(seen, bytes, std::memory_order_relaxed))
+        {
+        }
+    }
+
+    [[nodiscard]] auto count(AllocContext context) const -> std::uint64_t
+    {
+        return counts_[static_cast<std::uint32_t>(context) % alloc_context_count].load(std::memory_order_relaxed);
+    }
+
+    [[nodiscard]] auto bytes(AllocContext context) const -> std::uint64_t
+    {
+        return bytes_[static_cast<std::uint32_t>(context) % alloc_context_count].load(std::memory_order_relaxed);
+    }
+
+    [[nodiscard]] auto largest(AllocContext context) const -> std::uint64_t
+    {
+        return largest_[static_cast<std::uint32_t>(context) % alloc_context_count].load(std::memory_order_relaxed);
+    }
+
+  private:
+    std::array<std::atomic<std::uint64_t>, alloc_context_count> counts_{};
+    std::array<std::atomic<std::uint64_t>, alloc_context_count> bytes_{};
+    std::array<std::atomic<std::uint64_t>, alloc_context_count> largest_{};
 };
 
 }

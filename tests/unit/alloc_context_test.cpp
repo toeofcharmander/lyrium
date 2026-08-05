@@ -80,3 +80,75 @@ TEST(AllocContext, FitsTheReportTable)
 {
     EXPECT_LT(static_cast<std::uint32_t>(AllocContext::device_reset), lyrium::diag::alloc_context_count);
 }
+
+// ---------------------------------------------------------------------------
+// Totals that outlive the record buffer.
+//
+// The detailed records are capped at 256 and a live session filled all of them
+// between startup and the first five-second sample. Everything after load-in --
+// the churn that actually fragments the space over a session -- was recorded
+// nowhere. These totals are counters rather than records, so they cost an atomic
+// add and never fill.
+// ---------------------------------------------------------------------------
+
+using lyrium::diag::AllocContextTotals;
+
+TEST(AllocContextTotals, StartsAtNothing)
+{
+    auto totals = AllocContextTotals{};
+
+    EXPECT_EQ(totals.count(AllocContext::d3d_create_texture), 0u);
+    EXPECT_EQ(totals.bytes(AllocContext::d3d_create_texture), 0u);
+    EXPECT_EQ(totals.largest(AllocContext::d3d_create_texture), 0u);
+}
+
+TEST(AllocContextTotals, AccumulatesAgainstTheContext)
+{
+    auto totals = AllocContextTotals{};
+
+    totals.note(AllocContext::d3d_create_texture, 512u * 1024u);
+    totals.note(AllocContext::d3d_create_texture, 1400u * 1024u);
+
+    EXPECT_EQ(totals.count(AllocContext::d3d_create_texture), 2u);
+    EXPECT_EQ(totals.bytes(AllocContext::d3d_create_texture), 1912u * 1024u);
+}
+
+TEST(AllocContextTotals, KeepsContextsApart)
+{
+    auto totals = AllocContextTotals{};
+
+    totals.note(AllocContext::d3d_create_texture, 1u * 1024u);
+    totals.note(AllocContext::engine_texture, 2u * 1024u);
+
+    EXPECT_EQ(totals.bytes(AllocContext::d3d_create_texture), 1u * 1024u);
+    EXPECT_EQ(totals.bytes(AllocContext::engine_texture), 2u * 1024u);
+    EXPECT_EQ(totals.bytes(AllocContext::none), 0u);
+}
+
+// The largest single request is what separates a context making many small
+// allocations from the one making the 1.4 MB request that fails.
+TEST(AllocContextTotals, RemembersTheLargestSingleRequest)
+{
+    auto totals = AllocContextTotals{};
+
+    totals.note(AllocContext::none, 600u * 1024u);
+    totals.note(AllocContext::none, 16192u * 1024u);
+    totals.note(AllocContext::none, 700u * 1024u);
+
+    EXPECT_EQ(totals.largest(AllocContext::none), 16192u * 1024u);
+}
+
+// Unlike the record buffer, this must never stop counting -- the point is the
+// part of the session the records could not reach.
+TEST(AllocContextTotals, NeverFills)
+{
+    auto totals = AllocContextTotals{};
+
+    for (auto i = 0; i < 100'000; ++i)
+    {
+        totals.note(AllocContext::none, 1024u);
+    }
+
+    EXPECT_EQ(totals.count(AllocContext::none), 100'000u);
+    EXPECT_EQ(totals.bytes(AllocContext::none), 100'000u * 1024u);
+}

@@ -21,17 +21,6 @@
 namespace lyrium::diag
 {
 
-// The hook window currently open on this thread. Thread-local because two render
-// threads must not see each other's, and because reading it costs nothing.
-//
-// Written only by AllocContextScope from lyrium's own hooks, read only by the
-// allocation detours, and then only for allocations already past the threshold.
-inline auto current_alloc_context() -> AllocContext &
-{
-    static thread_local auto context = AllocContext::none;
-    return context;
-}
-
 // Records an allocation's size, address and the stack that asked for it.
 //
 // The frame capture has been removed once and restored once, and both moves were
@@ -109,6 +98,10 @@ inline auto collect_frames(AllocRecord &record, ::ULONG skip) -> void
     record.frame_count = captured;
 }
 
+// Session-long, unbounded, and the reason the records' 256-entry cap stopped
+// hiding everything after load-in.
+inline AllocContextTotals context_totals{};
+
 inline constexpr auto max_alloc_records = std::size_t{256};
 inline AllocRecord alloc_records[max_alloc_records]{};
 inline std::atomic<std::size_t> alloc_record_count{};
@@ -132,6 +125,8 @@ inline auto WINAPI virtual_alloc_detour(::LPVOID address, ::SIZE_T size, ::DWORD
 
     if (size >= alloc_watch_threshold.load(std::memory_order_relaxed))
     {
+        context_totals.note(current_alloc_context(), size);
+
         const auto index = alloc_record_count.fetch_add(1u, std::memory_order_relaxed);
         if (index < max_alloc_records)
         {
@@ -191,6 +186,8 @@ inline auto __attribute__((stdcall)) nt_allocate_detour(
     const auto size = (region_size != nullptr) ? static_cast<std::uint64_t>(*region_size) : 0u;
     if (status >= 0 && size >= alloc_watch_threshold.load(std::memory_order_relaxed))
     {
+        context_totals.note(current_alloc_context(), size);
+
         const auto index = alloc_record_count.fetch_add(1u, std::memory_order_relaxed);
         if (index < max_alloc_records)
         {
@@ -356,6 +353,8 @@ inline auto __attribute__((cdecl)) malloc_detour(std::size_t size) -> void *
 
     if (size >= alloc_watch_threshold.load(std::memory_order_relaxed))
     {
+        context_totals.note(current_alloc_context(), size);
+
         const auto index = alloc_record_count.fetch_add(1u, std::memory_order_relaxed);
         if (index < max_alloc_records)
         {
@@ -781,33 +780,26 @@ inline auto report_alloc_records(std::string_view reason) -> void
     // reach: was this allocation caused by a texture create? A d3d_create row
     // whose largest_kb matches the texture being made is the MANAGED duplicate,
     // caught without unwinding anything.
-    auto by_context = std::array<ModuleAllocations, alloc_context_count>{};
-    for (auto i = std::size_t{0}; i < count; ++i)
-    {
-        const auto &record = detail::alloc_records[i];
-        if (record.result == 0u)
-        {
-            continue;
-        }
-        auto &row = by_context[static_cast<std::uint32_t>(record.context) % alloc_context_count];
-        ++row.count;
-        row.bytes += record.size;
-        row.largest = record.size > row.largest ? record.size : row.largest;
-    }
-
+    //
+    // Read from the session-long totals rather than from the records. The
+    // records cap at 256 and a live session filled every one of them inside five
+    // seconds, so counting them answered only for load-in -- and the churn worth
+    // seeing is everything after it.
     for (auto i = std::uint32_t{0}; i < alloc_context_count; ++i)
     {
-        if (by_context[i].count == 0u)
+        const auto context = static_cast<AllocContext>(i);
+        const auto seen = detail::context_totals.count(context);
+        if (seen == 0u)
         {
             continue;
         }
         lyrium::log(
             "alloc_in[{}]: hook={} count={} kb={} largest_kb={}",
             reason,
-            name_of(static_cast<AllocContext>(i)),
-            by_context[i].count,
-            by_context[i].bytes / 1024u,
-            by_context[i].largest / 1024u);
+            name_of(context),
+            seen,
+            detail::context_totals.bytes(context) / 1024u,
+            detail::context_totals.largest(context) / 1024u);
     }
 }
 

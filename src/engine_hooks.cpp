@@ -14,6 +14,7 @@
 #include "lyrium/containers/vector.h"
 #include "lyrium/dao/inline_hook.h"
 #include "lyrium/dao/targets.h"
+#include "lyrium/diag/alloc_context.h"
 #include "lyrium/log.h"
 #include "lyrium/utils.h"
 
@@ -219,6 +220,8 @@ LYRIUM_THISCALL auto create_texture_cached_detour(
     const auto trace =
         FirstCallTrace{1u << 1u, "engine create_texture_cached: enter", "engine create_texture_cached: returned"};
     const auto guard = ReentryGuard{};
+    const auto watched = lyrium::diag::AllocContextScope{
+        lyrium::diag::current_alloc_context(), lyrium::diag::AllocContext::engine_texture};
 
     const auto original = reinterpret_cast<CreateTextureCachedFn>(hook_create_texture_cached.trampoline());
     auto *result = original(self, edx, ret_buf, name, width, height, levels, usage, format);
@@ -242,6 +245,8 @@ LYRIUM_THISCALL auto create_texture_registered_detour(
     const auto trace = FirstCallTrace{
         1u << 2u, "engine create_texture_registered: enter", "engine create_texture_registered: returned"};
     const auto guard = ReentryGuard{};
+    const auto watched = lyrium::diag::AllocContextScope{
+        lyrium::diag::current_alloc_context(), lyrium::diag::AllocContext::engine_texture};
 
     const auto original = reinterpret_cast<CreateTextureRegisteredFn>(hook_create_texture_registered.trampoline());
     auto *result = original(self, edx, ret_buf, name, a, b, c, d, e, f, g);
@@ -254,6 +259,8 @@ LYRIUM_THISCALL auto stream_load_detour(void *self, void *edx, void *ret_buf, vo
 {
     const auto trace = FirstCallTrace{1u << 3u, "engine stream_load: enter", "engine stream_load: returned"};
     const auto guard = ReentryGuard{};
+    const auto watched = lyrium::diag::AllocContextScope{
+        lyrium::diag::current_alloc_context(), lyrium::diag::AllocContext::engine_texture};
 
     const auto original = reinterpret_cast<StreamLoadFn>(hook_stream_load.trampoline());
     auto *result = original(self, edx, ret_buf, stream, a, b, c);
@@ -293,6 +300,8 @@ LYRIUM_THISCALL auto create_texture_2d_detour(
     const auto trace =
         FirstCallTrace{1u << 5u, "engine create_texture_2d: enter", "engine create_texture_2d: returned"};
     const auto guard = ReentryGuard{};
+    const auto watched = lyrium::diag::AllocContextScope{
+        lyrium::diag::current_alloc_context(), lyrium::diag::AllocContext::engine_texture};
 
     last_d3d_result.valid = false;
 
