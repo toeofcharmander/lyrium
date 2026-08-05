@@ -12,6 +12,7 @@
 #include <d3d9.h>
 #include <psapi.h>
 
+#include "lyrium/allocators/local_alloc_interposer.h"
 #include "lyrium/config.h"
 #include "lyrium/containers/unordered_map.h"
 #include "lyrium/dao/engine_hooks.h"
@@ -137,6 +138,7 @@ auto main_pool_override_bytes() -> std::uint32_t
 }
 
 lyrium::dao::PoolPatchResult pool_patch_result{};
+lyrium::LocalArenaResult local_arena_result{};
 const char *allocation_watch_mode{"not attempted"};
 
 auto rescue_coordinator() -> lyrium::policy::RescueCoordinator &;
@@ -203,6 +205,11 @@ auto log_ledger_snapshot(std::string_view reason, const lyrium::diag::VaStats &)
     {
         lyrium::diag::report_alloc_records(reason);
         lyrium::diag::report_import_probe(reason);
+    }
+
+    if (local_arena_result.installed)
+    {
+        lyrium::log_local_arena(reason);
     }
 
     const auto rescue = rescue_coordinator().stats();
@@ -1357,6 +1364,26 @@ extern "C"
     // MANAGED texture duplicates. They count and tail-call, changing nothing.
     // Gated on the allocation watch because that is the diagnostic they belong
     // to and both are off by default.
+    // Serves the runtime's large LocalAlloc requests from one reservation, so
+    // the texture duplicates stop cutting the low 2 GB into separate regions.
+    // Installed before the counting probe, which therefore wraps it: a call goes
+    // shim, then arena, then the real LocalAlloc. So imports[] counts every call
+    // the runtime makes and local_arena[] counts the subset taken, and
+    // `large` must equal `served` plus `full_fallbacks` -- a cross-check between
+    // two independently written probes.
+    if (config.local_arena_mb > 0u)
+    {
+        local_arena_result = lyrium::install_local_arena(
+            d3d9_lib,
+            static_cast<std::uint64_t>(config.local_arena_mb) * 1024ull * 1024ull,
+            static_cast<std::uint64_t>(config.local_arena_threshold_kb) * 1024ull);
+        lyrium::log(
+            "local arena: {} (reserved={}kb, threshold={}kb)",
+            local_arena_result.reason,
+            local_arena_result.reserved_bytes / 1024u,
+            config.local_arena_threshold_kb);
+    }
+
     if (config.allocation_watch)
     {
         const auto probe = lyrium::diag::install_import_probe(d3d9_lib);

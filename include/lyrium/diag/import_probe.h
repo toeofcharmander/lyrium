@@ -10,6 +10,7 @@
 
 #include "lyrium/diag/size_tally.h"
 #include "lyrium/log.h"
+#include "lyrium/utils.h"
 
 namespace lyrium::diag
 {
