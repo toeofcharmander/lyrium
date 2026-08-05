@@ -13,6 +13,7 @@
 #include <windows.h>
 
 #include "lyrium/dao/targets.h"
+#include "lyrium/diag/alloc_attribution.h"
 #include "lyrium/diag/va_region.h"
 #include "lyrium/log.h"
 
@@ -521,6 +522,56 @@ inline auto remove_alloc_watch() -> void
 // Read without synchronisation from the sampler thread while the render thread
 // may be appending. A torn record costs one wrong line in a diagnostic; taking a
 // lock on the allocation path would cost far more.
+namespace detail
+{
+
+// The module a return address belongs to, or 0 if it belongs to none.
+//
+// GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT so this cannot keep a module
+// alive, and this walks the loader list under the loader lock -- which is
+// exactly why it runs here, at report time on the sampler thread, and never on
+// the allocation path. Doing it inside a hook on NtAllocateVirtualMemory would
+// take the loader lock from inside the allocator the loader itself calls.
+inline auto module_of(std::uint64_t address) -> std::uint64_t
+{
+    if (address == 0u)
+    {
+        return 0u;
+    }
+
+    auto module = ::HMODULE{};
+    if (::GetModuleHandleExA(
+            GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+            reinterpret_cast<::LPCSTR>(static_cast<std::uintptr_t>(address)),
+            &module) == 0)
+    {
+        return 0u;
+    }
+    return reinterpret_cast<std::uintptr_t>(module);
+}
+
+inline auto module_name_of(std::uint64_t base) -> std::string
+{
+    if (base == 0u)
+    {
+        return "unattributed";
+    }
+
+    char path[MAX_PATH]{};
+    const auto length = ::GetModuleFileNameA(
+        reinterpret_cast<::HMODULE>(static_cast<std::uintptr_t>(base)), path, static_cast<::DWORD>(sizeof(path)));
+    if (length == 0u)
+    {
+        return "unknown";
+    }
+
+    auto name = std::string{path, length};
+    const auto slash = name.find_last_of("\\/");
+    return slash == std::string::npos ? name : name.substr(slash + 1u);
+}
+
+}
+
 inline auto report_alloc_records(std::string_view reason) -> void
 {
     const auto recorded = detail::alloc_record_count.load(std::memory_order_relaxed);
@@ -536,6 +587,8 @@ inline auto report_alloc_records(std::string_view reason) -> void
     auto above_bytes = std::uint64_t{};
     auto largest = std::uint64_t{};
     auto largest_at = std::uint64_t{};
+    auto by_module = AllocAttribution{};
+    auto unattributable = std::uint32_t{};
 
     for (auto i = std::size_t{0}; i < count; ++i)
     {
@@ -543,6 +596,10 @@ inline auto report_alloc_records(std::string_view reason) -> void
         if (record.result == 0u)
         {
             continue;
+        }
+        if (!attribute(by_module, detail::module_of(record.caller), record.size))
+        {
+            ++unattributable;
         }
         if (record.result < two_gigabytes)
         {
@@ -565,7 +622,8 @@ inline auto report_alloc_records(std::string_view reason) -> void
         // Deliberately not "below2g", which va[] already uses for a byte count. The
         // two lines sharing a field name that means different things made a
         // grep over the logs silently mix counts with bytes.
-        "alloc[{}]: recorded={} low_count={} low_kb={} high_count={} high_kb={} largest_kb={} at={:#x}",
+        "alloc[{}]: recorded={} low_count={} low_kb={} high_count={} high_kb={} largest_kb={} at={:#x} "
+        "modules={} unattributable={}",
         reason,
         recorded,
         below,
@@ -573,7 +631,26 @@ inline auto report_alloc_records(std::string_view reason) -> void
         above,
         above_bytes / 1024u,
         largest / 1024u,
-        largest_at);
+        largest_at,
+        attributed_modules(by_module),
+        unattributable);
+
+    // One line per module, which is the whole question: which code makes the
+    // allocations that cut the address space. largest_kb is what separates a
+    // module making many small allocations from the one making the 1.4 MB and
+    // 2.8 MB requests that fail.
+    for (auto used = attributed_modules(by_module), i = std::size_t{0}; i < used; ++i)
+    {
+        const auto &row = by_module[i];
+        lyrium::log(
+            "alloc_by[{}]: module={} base={:#x} count={} kb={} largest_kb={}",
+            reason,
+            detail::module_name_of(row.module_base),
+            row.module_base,
+            row.count,
+            row.bytes / 1024u,
+            row.largest / 1024u);
+    }
 }
 
 }

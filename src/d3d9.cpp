@@ -235,7 +235,16 @@ auto log_ledger_snapshot(std::string_view reason, const lyrium::diag::VaStats &)
 
 auto enable_allocation_watch() -> void
 {
-    static constexpr auto threshold = 8ull * 1024ull * 1024ull;
+    // Set to the NT heap's VirtualMemoryThreshold rather than above it. At the
+    // 8 MB it used to be, this watch recorded nothing at all in any session:
+    // the texture creates that fail are 1,398,128 and 2,796,202 bytes, and the
+    // MANAGED duplicates behind them are the same size. The watch was armed
+    // above its own subject.
+    //
+    // 508 KB is where the NT heap stops sub-allocating and gives a request its
+    // own reservation, which is exactly the traffic that turns into a separate
+    // region in the address space.
+    static constexpr auto threshold = 512ull * 1024ull;
 
     if (lyrium::diag::install_nt_alloc_hook(threshold))
     {
