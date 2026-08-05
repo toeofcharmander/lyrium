@@ -1,8 +1,9 @@
 #pragma once
 
 #include <array>
-#include <atomic>
 #include <cstdint>
+
+#include "lyrium/diag/size_tally.h"
 
 namespace lyrium::diag
 {
@@ -105,36 +106,36 @@ class AllocContextTotals
   public:
     auto note(AllocContext context, std::uint64_t bytes) -> void
     {
-        const auto slot = static_cast<std::uint32_t>(context) % alloc_context_count;
-
-        counts_[slot].fetch_add(1u, std::memory_order_relaxed);
-        bytes_[slot].fetch_add(bytes, std::memory_order_relaxed);
-
-        auto seen = largest_[slot].load(std::memory_order_relaxed);
-        while (bytes > seen && !largest_[slot].compare_exchange_weak(seen, bytes, std::memory_order_relaxed))
-        {
-        }
+        tally(context).note(bytes);
     }
 
     [[nodiscard]] auto count(AllocContext context) const -> std::uint64_t
     {
-        return counts_[static_cast<std::uint32_t>(context) % alloc_context_count].load(std::memory_order_relaxed);
+        return tally(context).count();
     }
 
     [[nodiscard]] auto bytes(AllocContext context) const -> std::uint64_t
     {
-        return bytes_[static_cast<std::uint32_t>(context) % alloc_context_count].load(std::memory_order_relaxed);
+        return tally(context).bytes();
     }
 
     [[nodiscard]] auto largest(AllocContext context) const -> std::uint64_t
     {
-        return largest_[static_cast<std::uint32_t>(context) % alloc_context_count].load(std::memory_order_relaxed);
+        return tally(context).largest();
     }
 
   private:
-    std::array<std::atomic<std::uint64_t>, alloc_context_count> counts_{};
-    std::array<std::atomic<std::uint64_t>, alloc_context_count> bytes_{};
-    std::array<std::atomic<std::uint64_t>, alloc_context_count> largest_{};
+    [[nodiscard]] auto tally(AllocContext context) -> SizeTally &
+    {
+        return tallies_[static_cast<std::uint32_t>(context) % alloc_context_count];
+    }
+
+    [[nodiscard]] auto tally(AllocContext context) const -> const SizeTally &
+    {
+        return tallies_[static_cast<std::uint32_t>(context) % alloc_context_count];
+    }
+
+    std::array<SizeTally, alloc_context_count> tallies_{};
 };
 
 }

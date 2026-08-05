@@ -17,6 +17,7 @@
 #include "lyrium/dao/engine_hooks.h"
 #include "lyrium/dao/pool_patch.h"
 #include "lyrium/diag/alloc_watch.h"
+#include "lyrium/diag/import_probe.h"
 #include "lyrium/diag/process_info.h"
 #include "lyrium/diag/sampler.h"
 #include "lyrium/diag/texture_size.h"
@@ -201,6 +202,7 @@ auto log_ledger_snapshot(std::string_view reason, const lyrium::diag::VaStats &)
     if (config.allocation_watch)
     {
         lyrium::diag::report_alloc_records(reason);
+        lyrium::diag::report_import_probe(reason);
     }
 
     const auto rescue = rescue_coordinator().stats();
@@ -1350,6 +1352,19 @@ extern "C"
     const auto d3d9_lib = ::LoadLibraryA(d3d9_path.c_str());
     lyrium::ensure(d3d9_lib != nullptr, "could not load {}", d3d9_path);
     lyrium::breadcrumb("Direct3DCreate9: system d3d9 loaded");
+
+    // Counting shims on the two imports that could still be carrying the
+    // MANAGED texture duplicates. They count and tail-call, changing nothing.
+    // Gated on the allocation watch because that is the diagnostic they belong
+    // to and both are off by default.
+    if (config.allocation_watch)
+    {
+        const auto probe = lyrium::diag::install_import_probe(d3d9_lib);
+        lyrium::log(
+            "import probe: LocalAlloc={} malloc={}",
+            probe.local_alloc_installed ? "installed" : "absent",
+            probe.crt_malloc_installed ? "installed" : "absent");
+    }
 
     const auto direct_create =
         reinterpret_cast<decltype(&Direct3DCreate9)>(::GetProcAddress(d3d9_lib, "Direct3DCreate9"));
