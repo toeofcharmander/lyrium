@@ -118,8 +118,11 @@ enum class FreeSpaceShape
     exhausted,
 };
 
+// needed_bytes is the size the space is being judged against, which is not
+// necessarily the request in hand: see RescueStats::largest_request_bytes for
+// why the caller passes the largest request of the session instead.
 [[nodiscard]] constexpr auto diagnose(
-    std::uint64_t requested_bytes,
+    std::uint64_t needed_bytes,
     std::uint64_t largest_free_bytes,
     std::uint64_t total_free_bytes) -> FreeSpaceShape
 {
@@ -127,11 +130,11 @@ enum class FreeSpaceShape
     {
         return FreeSpaceShape::unknown;
     }
-    if (requested_bytes <= largest_free_bytes)
+    if (needed_bytes <= largest_free_bytes)
     {
         return FreeSpaceShape::sufficient;
     }
-    return requested_bytes <= total_free_bytes ? FreeSpaceShape::fragmented : FreeSpaceShape::exhausted;
+    return needed_bytes <= total_free_bytes ? FreeSpaceShape::fragmented : FreeSpaceShape::exhausted;
 }
 
 [[nodiscard]] constexpr auto name_of(FreeSpaceShape shape) -> const char *

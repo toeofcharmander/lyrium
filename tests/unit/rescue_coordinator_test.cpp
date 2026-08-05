@@ -542,3 +542,40 @@ TEST(RescueCoordinator, RecordsWhetherTheSpaceWasScatteredOrGone)
     coordinator.consider(20u * mb, 0u);
     EXPECT_EQ(coordinator.stats().last_shape, FreeSpaceShape::exhausted);
 }
+
+// The shape must describe the space, not whichever texture happened to be last
+// through the door. A live session reported "sufficient" on all 28 samples while
+// the largest free block was 16.2 MB against 64.9 MB total -- genuinely
+// fragmented -- because nearly every request is a small texture that fits, and
+// the classifier was answering "would this one fit" rather than "would the one
+// that fails first fit".
+TEST(RescueCoordinator, TheShapeIsMeasuredAgainstTheLargestRequestSeen)
+{
+    Fixture f{};
+    auto coordinator = f.make();
+    f.probe.set(9u * mb);
+    f.probe.set_total(101u * mb);
+
+    coordinator.consider(20u * mb, 0u);
+    ASSERT_EQ(coordinator.stats().last_shape, FreeSpaceShape::fragmented);
+
+    // A small create must not reset the verdict to sufficient.
+    coordinator.consider(64u * 1024u, 0u);
+
+    EXPECT_EQ(coordinator.stats().last_shape, FreeSpaceShape::fragmented);
+    EXPECT_EQ(coordinator.stats().largest_request_bytes, 20u * mb);
+}
+
+// And it only ever rises, so one large texture early keeps the measurement
+// honest for the rest of the session.
+TEST(RescueCoordinator, TheLargestRequestSeenOnlyGrows)
+{
+    Fixture f{};
+    auto coordinator = f.make();
+
+    coordinator.consider(4u * mb, 0u);
+    coordinator.consider(19u * mb, 0u);
+    coordinator.consider(1u * mb, 0u);
+
+    EXPECT_EQ(coordinator.stats().largest_request_bytes, 19u * mb);
+}

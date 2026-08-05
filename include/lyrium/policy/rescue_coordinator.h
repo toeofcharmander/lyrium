@@ -79,10 +79,19 @@ struct RescueStats
     // create idling out, which overwrites it before anything can read it.
     const char *last_action_reason{""};
 
-    // What the last decision saw the free space as. Records the diagnosis rather
-    // than acting on it: the policy's behaviour is unchanged, and this exists so
-    // a session log says whether a tight moment was scattered bytes or no bytes.
+    // What the free space looked like at the last decision, measured against the
+    // largest request the session has seen rather than against the current one.
+    //
+    // Measuring against the current request made this useless: nearly every
+    // create is a small texture that fits in any hole, so a live session
+    // reported "sufficient" on all 28 samples while the largest free block was
+    // 16.2 MB against 64.9 MB total. The question worth answering is whether the
+    // allocation that fails first would still fit, and that is the largest one.
+    //
+    // Records the diagnosis rather than acting on it: the policy's behaviour is
+    // unchanged and nothing reads this but the log.
     FreeSpaceShape last_shape{FreeSpaceShape::unknown};
+    std::uint64_t largest_request_bytes{};
 };
 
 // Holds the state a rescue decision needs and executes the resulting plan.
@@ -165,7 +174,11 @@ class RescueCoordinator
         }
         stats_.under_pressure = under_pressure_;
         stats_.last_largest_free_bytes = inputs.largest_free_bytes;
-        stats_.last_shape = diagnose(inputs.requested_bytes, inputs.largest_free_bytes, inputs.total_free_bytes);
+        if (requested_bytes > stats_.largest_request_bytes)
+        {
+            stats_.largest_request_bytes = requested_bytes;
+        }
+        stats_.last_shape = diagnose(stats_.largest_request_bytes, inputs.largest_free_bytes, inputs.total_free_bytes);
         stats_.last_reason = plan.reason;
 
         if (!plan.acts())

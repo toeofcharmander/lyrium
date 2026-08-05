@@ -203,7 +203,7 @@ auto log_ledger_snapshot(std::string_view reason, const lyrium::diag::VaStats &)
     const auto rescue = rescue_coordinator().stats();
     lyrium::log(
         "rescue[{}]: pressure={} preemptive={} on_failure={} evictions={} clears={} managed={} released={} "
-        "suppressed={} scratch={}/{}kb headroom={} laa={} low={} avoided={} shape={} last={} acted={}",
+        "suppressed={} scratch={}/{}kb headroom={} laa={} low={} avoided={} shape={}@{}kb last={} acted={}",
         reason,
         rescue.under_pressure,
         rescue.preemptive,
@@ -220,6 +220,7 @@ auto log_ledger_snapshot(std::string_view reason, const lyrium::diag::VaStats &)
         lyrium::diag::Sampler::instance().largest_free_below_2g(),
         lyrium::stats::rescue_avoided_low.load(std::memory_order_relaxed),
         lyrium::policy::name_of(rescue.last_shape),
+        rescue.largest_request_bytes / 1024u,
         rescue.last_reason,
         rescue.last_action_reason);
 }
