@@ -9,6 +9,7 @@
 #include <psapi.h>
 #include <windows.h>
 
+#include "lyrium/diag/free_size_classes.h"
 #include "lyrium/diag/va_region.h"
 #include "lyrium/log.h"
 
@@ -27,7 +28,7 @@ struct VaStats
     std::uint32_t free_regions;
     std::uint32_t total_regions;
 
-    std::array<std::uint32_t, 9u> buckets;
+    FreeBuckets buckets;
 
     std::uint64_t working_set;
     std::uint64_t private_usage;
@@ -53,13 +54,6 @@ struct VaStats
 
     std::int64_t walk_us;
 };
-
-inline constexpr std::array<std::uint64_t, 5u> committed_thresholds = {
-    1ull << 20, 4ull << 20, 16ull << 20, 64ull << 20, 256ull << 20};
-
-inline constexpr std::array<std::uint64_t, 9u> bucket_thresholds = {
-    1ull << 20, 2ull << 20, 4ull << 20, 8ull << 20, 16ull << 20,
-    32ull << 20, 64ull << 20, 128ull << 20, 256ull << 20};
 
 inline auto sample_va() -> VaStats
 {
@@ -99,13 +93,7 @@ inline auto sample_va() -> VaStats
                 stats.largest_free_below_2g = usable;
             }
 
-            for (auto i = std::size_t{0}; i < bucket_thresholds.size(); ++i)
-            {
-                if (size >= bucket_thresholds[i])
-                {
-                    ++stats.buckets[i];
-                }
-            }
+            accumulate_free_buckets(stats.buckets, size);
         }
         else if (info.State == MEM_RESERVE)
         {
@@ -121,9 +109,9 @@ inline auto sample_va() -> VaStats
             }
 
             ++stats.committed_regions;
-            for (auto i = std::size_t{0}; i < committed_thresholds.size(); ++i)
+            for (auto i = std::size_t{0}; i < committed_bucket_thresholds.size(); ++i)
             {
-                if (size >= committed_thresholds[i])
+                if (size >= committed_bucket_thresholds[i])
                 {
                     ++stats.committed_buckets[i];
                 }

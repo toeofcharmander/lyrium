@@ -73,9 +73,18 @@ logging=1
 overlay=1
 ```
 
-`overlay` toggles an ImGui panel with Shift+F12 showing live texture and
-address-space figures. `logging` writes a session log to `lyrium_logs/`. Both
-are off by default. See `include/lyrium/config.h` for the full set of keys.
+`overlay` toggles a panel on Shift+F12. `logging` writes a session log to
+`lyrium_logs/`. Both are off by default. See `include/lyrium/config.h` for the
+full set of keys.
+
+The panel leads with the number that predicts the crash: **headroom**, the
+largest single unbroken block of address space still available, with a mark
+showing where the rescue arms. Below it is how much memory the fix is keeping
+out of that space, and a histogram of free-block sizes running from large blocks
+on the left to unusable slivers on the right. Fragmentation is that distribution
+shifting rightward over a session -- the same free bytes breaking into more and
+smaller pieces -- which is the failure itself rather than a proxy for it. Folds
+underneath carry the detailed texture, pool and engine counters.
 
 If the game does not start, launch `bin_ship\DAOrigins.exe` directly rather than
 through the launcher — `DAOriginsConfig.exe` crashes on modern hardware for

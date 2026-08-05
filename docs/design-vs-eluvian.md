@@ -80,7 +80,7 @@ policy's normal case.
 | Mip validity | Bit-packed flags written outside the lock — two threads could lose an update | Atomic bitmask; the race is unrepresentable |
 | Process exit | Destructors joined threads the OS had already killed, under the loader lock | Nothing static is destroyed; the log is sealed explicitly |
 | Diagnosis | The address-space walk logged nothing; hook mismatches computed a report and discarded it | Both logged; a session that ended normally says so |
-| Tests | None | 18 suites, run as 32-bit binaries so pointer width matches production |
+| Tests | None | 19 suites, run as 32-bit binaries so pointer width matches production |
 
 ## Why this should not cause more crashes
 

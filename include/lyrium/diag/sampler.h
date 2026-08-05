@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cstdint>
@@ -8,14 +9,29 @@
 #include <thread>
 
 #include "lyrium/dao/engine_hooks.h"
-#include "lyrium/never_destroyed.h"
 #include "lyrium/diag/va_space.h"
 #include "lyrium/log.h"
-#include "lyrium/utils.h"
+#include "lyrium/never_destroyed.h"
 #include "lyrium/texture_recycler.h"
+#include "lyrium/utils.h"
 
 namespace lyrium::diag
 {
+
+// What the overlay needs from the last walk. Kept small and copied under a try
+// lock so the render thread never blocks behind a sample in progress.
+struct FreeSpaceSnapshot
+{
+    std::uint64_t largest_free{};
+    std::uint64_t largest_free_below_2g{};
+    std::uint64_t total_free{};
+    std::uint32_t free_regions{};
+    std::int64_t walk_us{};
+    // Cumulative counts of free blocks at each size threshold, differenced by
+    // the overlay through free_size_classes(). Both sides must read the same
+    // thresholds in the same order; see free_size_classes.h.
+    FreeBuckets size_buckets{};
+};
 
 class Sampler
 {
@@ -40,12 +56,11 @@ class Sampler
 
         // The interval is captured by value rather than read from a member, so
         // the loop shares no mutable state with anyone.
-        thread_ = std::thread{
-            [this, interval_ms]
-            {
-                register_own_thread();
-                run(interval_ms);
-            }};
+        thread_ = std::thread{[this, interval_ms]
+                              {
+                                  register_own_thread();
+                                  run(interval_ms);
+                              }};
     }
 
     // Called after every sample so the DLL can add its own figures to the same
@@ -61,6 +76,16 @@ class Sampler
     auto sample_now(std::string_view reason) -> void
     {
         const auto stats = sample_va();
+
+        {
+            const auto lock = std::scoped_lock{snapshot_mutex_};
+            snapshot_.largest_free = stats.largest_free;
+            snapshot_.largest_free_below_2g = stats.largest_free_below_2g;
+            snapshot_.total_free = stats.total_free;
+            snapshot_.free_regions = stats.free_regions;
+            snapshot_.walk_us = stats.walk_us;
+            snapshot_.size_buckets = stats.buckets;
+        }
 
         last_largest_free_.store(stats.largest_free, std::memory_order_relaxed);
         last_largest_free_below_2g_.store(stats.largest_free_below_2g, std::memory_order_relaxed);
@@ -87,6 +112,20 @@ class Sampler
         {
             observer(reason, stats);
         }
+    }
+
+    // Declines rather than waits: this is called from the render thread every
+    // frame, and a sample in progress holds the lock for the length of a full
+    // address-space walk, which is 6 to 20 ms.
+    [[nodiscard]] auto try_snapshot(FreeSpaceSnapshot &out) const -> bool
+    {
+        const auto lock = std::unique_lock{snapshot_mutex_, std::try_to_lock};
+        if (!lock.owns_lock())
+        {
+            return false;
+        }
+        out = snapshot_;
+        return true;
     }
 
     auto largest_free() const -> std::uint64_t
@@ -135,9 +174,12 @@ class Sampler
 
     std::mutex mutex_;
     std::thread thread_;
+    mutable std::mutex snapshot_mutex_{};
+    FreeSpaceSnapshot snapshot_{};
+
     std::atomic<std::uint64_t> last_largest_free_{};
     std::atomic<std::uint64_t> last_largest_free_below_2g_{};
-    std::atomic<std::uint64_t> last_total_free_{};
+    std::atomic<std::uint64_t> last_total_free_{};
     std::atomic<Observer> observer_{nullptr};
     // Start-once latch only; nothing ever clears it.
     bool running_{false};

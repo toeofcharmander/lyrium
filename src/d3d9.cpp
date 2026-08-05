@@ -12,10 +12,7 @@
 #include <d3d9.h>
 #include <psapi.h>
 
-
 #include "lyrium/config.h"
-#include "lyrium/overlay.h"
-#include "lyrium/stats.h"
 #include "lyrium/containers/unordered_map.h"
 #include "lyrium/dao/engine_hooks.h"
 #include "lyrium/dao/pool_patch.h"
@@ -26,15 +23,17 @@
 #include "lyrium/diag/va_space.h"
 #include "lyrium/hooks/com_hook.h"
 #include "lyrium/log.h"
-#include "lyrium/resettable_texture.h"
 #include "lyrium/never_destroyed.h"
+#include "lyrium/overlay.h"
 #include "lyrium/policy/rescue_coordinator.h"
 #include "lyrium/policy/texture_placement_policy.h"
-#include "lyrium/texture/dll_texture_ledger.h"
+#include "lyrium/rescue_access.h"
+#include "lyrium/resettable_texture.h"
 #include "lyrium/resource_tracker.h"
+#include "lyrium/stats.h"
+#include "lyrium/texture/dll_texture_ledger.h"
 #include "lyrium/texture_recycler.h"
 #include "lyrium/utils.h"
-
 
 using lyrium::Event;
 
@@ -340,6 +339,16 @@ auto rescue_parts() -> RescueParts &
 auto rescue_coordinator() -> lyrium::policy::RescueCoordinator &
 {
     return rescue_parts().coordinator;
+}
+
+}
+
+namespace lyrium
+{
+
+auto rescue_stats() -> policy::RescueStats
+{
+    return rescue_coordinator().stats();
 }
 
 }

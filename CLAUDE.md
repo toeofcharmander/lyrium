@@ -128,6 +128,17 @@ did not exit normally**, which is the one thing a log could not previously tell
 you. `lyrium_breadcrumbs.txt` should end with `detach: sealed`; if it ends
 earlier, the last breadcrumb names the statement that hung.
 
+**Installed is not the same as called.** Only six of the ten engine hooks are
+ever entered on a stock install: `create_texture_2d`, `create_texture_cached`,
+`create_texture_registered`, `stream_load`, `texture_cache_evict` and
+`texture_cache_clear`. `load_texture_file`, `decode_texture_memory`,
+`create_texture_from_memory` and `create_volume_from_memory` never fire, because
+assets arrive through the streaming path rather than as loose files. Each detour
+writes a one-time breadcrumb on first entry, so `lyrium_breadcrumbs.txt` is how
+you tell a dead path from a broken counter -- that is what established the
+permanent `texture loads: 0`, whose overlay row was dropped for reading as a
+broken gauge. Do not "fix" a zero counter without checking the breadcrumbs first.
+
 Verified baseline on the GOG Ultimate Edition: overlay renders, all ten engine
 hooks report `installed` at their preferred addresses with `base_delta == 0`, and
 that install is large-address-aware, so calibrate thresholds against ~4 GB there
@@ -157,6 +168,21 @@ that name no D3D or Windows type, so they compile and are tested on Linux:
 `policy/rescue_policy.h` decides when and how hard to evict, and
 `policy/rescue_coordinator.h` executes plans through abstract seams. The D3D
 hooks convert at the boundary and contain no decisions of their own.
+
+**Arithmetic does not live in a Windows-only header.** Anything that includes
+`windows.h` or `psapi.h` cannot be reached by the test suite, so any calculation
+placed there is untestable by construction. Put the numbers in a portable header
+and let the Windows code call it. This is not a style preference -- it was
+learned from a shipped bug: the free-block size thresholds existed twice, once
+descending in the portable `diag/va_region.h` and once ascending inside
+`diag/va_space.h`, which needs `psapi.h`. A test asserted the ordering of the
+portable copy and passed, while production used the other one, and the overlay
+drew a healthy address space as a shattered one. The fix was not to reorder an
+array but to move both the accumulation and the differencing into
+`diag/free_size_classes.h`, where both sides read the same thresholds through the
+same functions and the whole thing is under test. **A green test proves nothing
+about an array production does not use** -- when duplicating a constant is
+tempting, that is the smell.
 
 **Exit is deliberately destructor-free.** Objects with static storage duration
 are never destroyed (`never_destroyed.h`); objects with automatic or dynamic
@@ -189,7 +215,12 @@ The main mechanisms, each mostly independent:
   textures keyed by shape, with a byte budget.
 - **Diagnostics** (`diag/`, `stats.h`, `log.h`, `overlay.*`) -- VA-space and
   texture accounting, a background sampler thread, breadcrumb/file logging, and an
-  ImGui overlay.
+  ImGui overlay. `diag/free_size_classes.h` holds the free-block size
+  distribution, shared by the address-space walk and the overlay histogram.
+  The overlay reads rescue activity through `rescue_access.h`, **not** through
+  `dao::engine_state().evictions`: that counter increments on every call through
+  the engine's emergency-evict hook, including the hundreds the game makes
+  managing its own cache, so it says nothing about whether lyrium intervened.
 
 **Memory discipline is a hard rule**: the DLL must not consume the game's address
 space or CRT heap. `allocators/global_allocator.h` creates a private heap
