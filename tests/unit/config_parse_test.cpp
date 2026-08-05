@@ -81,12 +81,10 @@ TEST(ConfigParse, MegabyteAndKilobyteSuffixesConvert)
 {
     // These conversions produce the memory thresholds the whole project runs on.
     const auto config = configured(
-        "recycler_budget_mb=32\n"
         "texture_pool_min_kb=64\n"
         "rescue_low_watermark_mb=8\n"
         "rescue_large_create_kb=512\n");
 
-    EXPECT_EQ(config.recycler.budget_bytes, 32ull * 1024ull * 1024ull);
     EXPECT_EQ(config.texture_pool.minimum_bytes, 64ull * 1024ull);
     EXPECT_EQ(config.rescue.low_watermark_bytes, 8ull * 1024ull * 1024ull);
     EXPECT_EQ(config.rescue.large_create_bytes, 512ull * 1024ull);
@@ -97,7 +95,7 @@ TEST(ConfigParse, AbsentKeysLeaveTheStructDefaults)
     const auto config = configured("");
     const auto defaults = Config{};
 
-    EXPECT_EQ(config.recycler.budget_bytes, defaults.recycler.budget_bytes);
+    EXPECT_EQ(config.rescue.low_watermark_bytes, defaults.rescue.low_watermark_bytes);
     EXPECT_EQ(config.texture_pool.minimum_bytes, defaults.texture_pool.minimum_bytes);
     EXPECT_EQ(config.sample_interval_ms, defaults.sample_interval_ms);
 }
@@ -112,11 +110,13 @@ TEST(ConfigParse, TheSampleIntervalIsClampedToAFloor)
 TEST(ConfigParse, GarbageNumbersSilentlyBecomeZero)
 {
     // strtoull returns 0 rather than failing, so a typo does not fall back to
-    // the default -- it sets a zero budget. Pinned so the behaviour is known.
-    const auto config = configured("recycler_budget_mb=abc\n");
+    // the default -- it sets a zero threshold. Pinned so the behaviour is known,
+    // because the consequence is silent: rescue_low_watermark_mb=abc disarms the
+    // watermark rather than leaving it where the struct declares it.
+    const auto config = configured("rescue_low_watermark_mb=abc\n");
 
-    EXPECT_EQ(config.recycler.budget_bytes, 0u) << "a malformed number yields zero, not the 96 MB default";
-    EXPECT_NE(config.recycler.budget_bytes, Config{}.recycler.budget_bytes);
+    EXPECT_EQ(config.rescue.low_watermark_bytes, 0u) << "a malformed number yields zero, not the default";
+    EXPECT_NE(config.rescue.low_watermark_bytes, Config{}.rescue.low_watermark_bytes);
 }
 
 TEST(ConfigParse, OverlayDefaultDisagreesBetweenTheStructAndTheParser)

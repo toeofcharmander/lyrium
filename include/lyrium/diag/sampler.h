@@ -13,7 +13,6 @@
 #include "lyrium/diag/va_space.h"
 #include "lyrium/log.h"
 #include "lyrium/never_destroyed.h"
-#include "lyrium/texture_recycler.h"
 #include "lyrium/utils.h"
 
 namespace lyrium::diag

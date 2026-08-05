@@ -13,7 +13,7 @@
 // headers so it can be tested.
 //
 // These conversions produce every memory threshold the project uses -- the
-// recycler budget, the pool-override minimum, the rescue watermarks -- and none
+// the pool-override minimum, the rescue watermarks -- and none
 // of them had any coverage. The remaining half, which needs to know where the
 // executable lives and where logs may be written, stays in config.h.
 
@@ -46,20 +46,11 @@ struct TexturePoolConfig
     bool fall_back_to_managed{true};
 };
 
-struct RecyclerConfig
-{
-    bool enabled{false};
-
-    std::uint64_t budget_bytes{96ull * 1024ull * 1024ull};
-    std::uint32_t max_per_key{8};
-};
-
 struct Config
 {
     dao::EngineConfig engine{};
     RescueConfig rescue{};
     TexturePoolConfig texture_pool{};
-    RecyclerConfig recycler{};
     std::int64_t sample_interval_ms{5000};
     bool overlay{true};
     bool allocation_watch{false};
@@ -140,16 +131,6 @@ inline auto apply_values(Config &config, const ConfigValues &values) -> void
     config.allocation_watch = parse_bool(lookup("allocation_watch"), false);
     config.logging = parse_bool(lookup("logging"), false);
 
-    config.recycler.enabled = parse_bool(lookup("recycler"), false);
-    if (const auto value = lookup("recycler_budget_mb"); !value.empty())
-    {
-        config.recycler.budget_bytes = std::strtoull(value.c_str(), nullptr, 10) * 1024ull * 1024ull;
-    }
-    if (const auto value = lookup("recycler_max_per_key"); !value.empty())
-    {
-        config.recycler.max_per_key = static_cast<std::uint32_t>(std::strtoul(value.c_str(), nullptr, 10));
-    }
-
     config.texture_pool.prefer_default = parse_bool(lookup("texture_pool_default"), true);
     config.texture_pool.fall_back_to_managed = parse_bool(lookup("texture_pool_fallback"), true);
     if (const auto value = lookup("texture_pool_min_kb"); !value.empty())
@@ -184,5 +165,4 @@ inline auto apply_values(Config &config, const ConfigValues &values) -> void
         }
     }
 }
-
 }

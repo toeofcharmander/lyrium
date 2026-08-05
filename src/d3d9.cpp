@@ -33,7 +33,6 @@
 #include "lyrium/resource_tracker.h"
 #include "lyrium/stats.h"
 #include "lyrium/texture/dll_texture_ledger.h"
-#include "lyrium/texture_recycler.h"
 #include "lyrium/utils.h"
 
 using lyrium::Event;
@@ -323,13 +322,7 @@ class EngineEvictionBackend final : public lyrium::policy::EvictionBackend
 
     [[nodiscard]] auto release_scratch() -> std::uint64_t override
     {
-        // The recycler is flushed too when enabled; both pools refill naturally.
-        auto freed = lyrium::flush_staging_pool();
-        if (config.recycler.enabled)
-        {
-            lyrium::TextureRecycler::instance().purge();
-        }
-        return freed;
+        return lyrium::flush_staging_pool();
     }
 
     [[nodiscard]] auto clear_cache() -> bool override
@@ -493,7 +486,6 @@ struct ResetScope
 
 // Set by the Reset hook, consumed on the next EndScene. Sampling and logging are
 // diagnostics, so they can happen a frame later, outside the driver's lock.
-std::atomic<std::uint32_t> reset_purged{};
 std::atomic<bool> reset_report_pending{false};
 std::atomic<std::uint32_t> reset_failed_hr{0u};
 
@@ -635,10 +627,6 @@ __declspec(dllexport) ::HRESULT WINAPI IDirect3DDevice9_EndScene_Hook(::PROC ori
         // Deliberately here rather than in the Reset hook: an address-space walk
         // measured 13 ms per sample, and two of them ran inside the engine's
         // driver mutex on every reset. See ResetScope for what that widens.
-        if (const auto purged = reset_purged.exchange(0u, std::memory_order_relaxed); purged > 0u)
-        {
-            lyrium::log("device reset: purged {} idle textures from the recycler", purged);
-        }
         if (const auto hr = reset_failed_hr.exchange(0u, std::memory_order_relaxed); hr != 0u)
         {
             lyrium::log("device reset failed (hr={:#010x}), deferring texture restore", hr);
@@ -779,28 +767,10 @@ __declspec(dllexport) ::ULONG WINAPI IDirect3DTexture9_Release_hook(::PROC orig_
 {
     using orig_call_type = OrigFuncType<decltype(&IDirect3DTexture9_Release_hook)>;
 
-    auto *texture = reinterpret_cast<::IDirect3DTexture9 *>(that);
-
-    if (lyrium::TextureRecycler::instance().enabled())
-    {
-        texture->AddRef();
-        const auto references = reinterpret_cast<orig_call_type>(orig_func)(that);
-
-        if (references == 1u && lyrium::TextureRecycler::instance().retain(texture))
-        {
-            // Retained, not destroyed: the recycler owns it now and it still
-            // occupies address space, so it stays on the ledger. Re-acquiring it
-            // re-registers the same handle, which replaces the record rather
-            // than adding a second one.
-            return 0u;
-        }
-    }
-
     const auto res = reinterpret_cast<orig_call_type>(orig_func)(that);
 
     if (res == 0)
     {
-        lyrium::TextureRecycler::instance().forget(texture);
         forget_texture(that);
     }
 
@@ -844,40 +814,6 @@ __declspec(dllexport) ::HRESULT WINAPI IDirect3DDevice9_CreateTexture_hook(
     auto pool = static_cast<::D3DPOOL>(placement.pool);
     auto pool_overridden = placement.relocated();
 
-    const auto key = lyrium::TextureRecycler::Key{
-        .width = Width,
-        .height = Height,
-        .levels = Levels,
-        .usage = static_cast<std::uint32_t>(Usage),
-        .format = static_cast<std::uint32_t>(Format),
-        .pool = static_cast<std::uint32_t>(pool)};
-
-    if (!pool_overridden && ppTexture != nullptr)
-    {
-        if (auto *recycled = lyrium::TextureRecycler::instance().acquire(key); recycled != nullptr)
-        {
-            *ppTexture = recycled;
-
-            // A recycler hit is still a creation from the game's point of view.
-            // Returning early without counting it made d3d_creates undercount,
-            // hid these calls from the failure counter, and skipped the result
-            // correlation the engine-side diagnostics rely on. It also made the
-            // create sequence in the log jump, which is how it was noticed.
-            note_create(S_OK, bytes);
-            remember_texture(recycled, bytes, pool, placement.relocated());
-            return S_OK;
-        }
-    }
-
-    // Marks the window the allocation watch attributes against. This one call is
-    // where the D3D9 runtime would allocate a MANAGED texture's system-memory
-    // duplicate, and marking it is the only way to see that: two sessions of
-    // stack walking resolved every record to ntdll, kernel32 or kernelbase,
-    // because RtlCaptureStackBackTrace follows the EBP chain and optimised
-    // 32-bit system code has no frame pointers to follow.
-    //
-    // A thread-local store and restore, unconditional because the watch is off
-    // by default and a branch would cost as much as the store.
     const auto create_started = lyrium::now_us();
     auto res = ::HRESULT{};
     {
@@ -963,7 +899,6 @@ __declspec(dllexport) ::HRESULT WINAPI IDirect3DDevice9_CreateTexture_hook(
             return res;
         }
 
-        lyrium::TextureRecycler::instance().note_created(texture, key, bytes);
         com_hook.add_hook<2zu>(texture, IDirect3DTexture9_Release_hook);
     }
 
@@ -1143,8 +1078,6 @@ IDirect3DDevice9_Reset_hook(::PROC orig_func, void *that, ::D3DPRESENT_PARAMETER
     lyrium::overlay::before_device_reset();
     lyrium::before_resettable_texture_reset(reinterpret_cast<::IDirect3DDevice9 *>(that));
 
-    reset_purged.store(lyrium::TextureRecycler::instance().purge(), std::memory_order_relaxed);
-
     const auto res = reinterpret_cast<orig_call_type>(orig_func)(that, pPresentationParameters);
 
     // Only restore once the device is actually back. Recreating DEFAULT-pool
@@ -1300,14 +1233,13 @@ extern "C"
             lyrium::log("lyrium diagnostic startup, pid={}", ::GetCurrentProcessId());
             lyrium::log(
                 "config: engine_hooks={}, cache_hooks={}, allocator_hooks={}, allocation_watch={}, overlay={}, "
-                "texture_pool_default={}, recycler={}, sample_interval_ms={}",
+                "texture_pool_default={}, sample_interval_ms={}",
                 config.engine.hook_texture_paths,
                 config.engine.hook_cache,
                 config.engine.hook_allocator,
                 config.allocation_watch,
                 config.overlay,
                 config.texture_pool.prefer_default,
-                config.recycler.enabled,
                 config.sample_interval_ms);
             // Which address-space ceiling this process actually has. Without the
             // LAA patch the game gets 2 GB; with it, up to 4 GB on 64-bit
@@ -1340,9 +1272,6 @@ extern "C"
         }
 
         lyrium::overlay::set_visible(config.overlay);
-
-        lyrium::TextureRecycler::instance().configure(
-            config.recycler.enabled, config.recycler.budget_bytes, config.recycler.max_per_key);
 
         lyrium::breadcrumb("Direct3DCreate9: installing engine hooks");
         lyrium::dao::install_engine_hooks(config.engine);

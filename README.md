@@ -1,187 +1,129 @@
 # lyrium
 
 A proxy `d3d9.dll` for Dragon Age: Origins that stops the address-space
-exhaustion behind the late-session texture flickering and crashes.
+exhaustion behind late-session texture flickering and crashes.
 
 ## Credits
 
-This project stands on two pieces of work that came before it.
-
-**Nathan Baggs** did the original research that identified the problem and
-proved it could be solved from a proxy DLL —
-[nathan-baggs/mandrel](https://github.com/nathan-baggs/mandrel). Everything here
-starts from that diagnosis.
-
-**Matthew (adarec1994)** built [eluvian](https://github.com/adarec1994/eluvian),
-the implementation this is forked from. The core technique that makes the fix
-work — steering managed textures to the DEFAULT pool and backing their CPU-side
-copy with a pagefile-backed file mapping that is only mapped during a lock — is
-his, and it survives here essentially unchanged because it is the right design.
-
-The startup pool patch is his as well — `main_pool_mb` — though it shipped
-switched off, and working out what it is actually worth is the one measurement
-here that changes what the mod does.
-
-lyrium has diverged substantially: the policy layer is rewritten and unit
-tested, the eviction behaviour is bounded rather than unbounded, and there is a
-test suite where there was none. But the diagnosis and the central mechanism are
-inherited, and the project would not exist without either of them.
+- **Nathan Baggs** — [nathan-baggs/mandrel](https://github.com/nathan-baggs/mandrel).
+  The original research identifying the problem.
+- **Matthew (adarec1994)** — [eluvian](https://github.com/adarec1994/eluvian).
+  The implementation this is forked from. Texture relocation and the startup
+  pool patch are both his.
 
 ## The problem
 
-Dragon Age: Origins is a 32-bit game, so it has 2 GB of address space (4 GB with
-the widely used LAA patch). The longer you play, the more fragmented that space
-becomes. Every texture needs one contiguous block, and when none is available
-DirectX returns an out-of-memory error, which produces the texture flickering
-and then the crash.
+Dragon Age: Origins is 32-bit, so it has 2 GB of address space (4 GB with the
+LAA patch). Two things consume it.
 
-The failure is not exhaustion. In a captured case there was 20 MB free, split
-across roughly 430 separate gaps — the memory existed, just never in one piece.
+**Texture duplicates.** A `D3DPOOL_MANAGED` texture keeps a full CPU-side copy in
+that address space. Each copy over 508 KB becomes its own separate reservation,
+and they turn over constantly at varying sizes, so the free space is re-cut on
+every cycle. Roughly 137 of them per session, about 211 MB. The bytes come back;
+the contiguity does not. A texture create needs one unbroken block, and when no
+block is large enough DirectX returns out-of-memory — the flickering, then the
+crash.
 
-**It is not a memory leak either**, though that is what it is almost universally
-called. Nothing is allocated and never returned. The engine takes a managed
-texture, uses it, releases it, and the bytes come back; total free memory holds
-steady for an entire session. What does not come back is the *shape*. Every
-allocate-and-release cycle re-cuts the free space slightly differently, because
-the texture that fills a hole is never the same size as the one that left, and
-roughly 150 MB of duplicates churn through per session. The bytes are conserved.
-The contiguity is not.
+**The engine's startup pool.** The engine reserves 850 MB for itself at launch,
+before anything else runs. On a 2 GB install that is most of the space, and it
+does not need all of it.
 
-That distinction matters because it says which fixes can possibly work. More RAM
-cannot help with a failure that happens while 2 GB is free. Neither can anything
-that only enlarges the arena. The LAA patch is worth applying and does not fix
-this: it doubles the space the grinding has to work through, which is why the
-standard advice is to save and restart every couple of hours. A fresh process
-gets a fresh, uncut address space.
+## What it does
 
-What the LAA patch does do, measured rather than assumed, is give Windows
-somewhere else to put things. Allocations are served from the lowest free block
-that fits, so the upper half stays untouched until nothing below fits any more.
-In one instrumented session the largest free block below the 2 GB line fell from
-579 MB to 19.6 MB while the upper half sat at exactly the same figure throughout,
-and only then did the upper half start being used. At the worst point there were
-84.7 MB free below the line in roughly 360 pieces averaging 241 KB, with the
-largest at 8.8 MB — the memory present, in fragments, with no way to combine
-them, which is what fragmentation means in practice. On an unpatched 2 GB install
-there is no upper half to fall back on.
+**Texture relocation** creates eligible textures in `D3DPOOL_DEFAULT`, which has
+no CPU-side copy. DEFAULT textures cannot be locked, so a wrapper hands the
+engine a view of a pagefile-backed section for the duration of a lock, copies the
+result to the card, and unmaps. The engine cannot tell the difference. On by
+default.
 
-At startup the engine reserves about 795 MB for its own memory pool and roughly
-286 MB goes to module images (DLLs, CUDA, PhysX and so on), leaving around
-229 MB for managed texture duplicates. It does not happen on console, most
-likely because the PC textures are higher resolution.
+**The pool patch** rewrites the immediate in the instruction that sizes the
+engine's startup pool. Off by default; see below.
 
-## How it works
-
-A `MANAGED` texture keeps a full CPU-side duplicate inside that address space.
-Creating it in the `DEFAULT` pool removes the duplicate — but DEFAULT textures
-cannot be locked, and the engine writes textures by locking them.
-
-So a wrapper stands in. When the engine locks a texture it is handed a temporary
-buffer instead, backed by a pagefile file mapping that is only mapped for the
-duration of the lock and therefore costs no persistent address space. It fills
-that with pixels, the wrapper copies it to the graphics card and discards the
-mapping. The engine cannot tell the difference.
-
-Two supporting mechanisms sit behind that. A **placement policy** decides which
-textures are eligible — large, block-compressed, not a render target or dynamic
-surface — and runs on every texture creation. A **rescue policy** is the
-emergency backstop, evicting from the engine's texture cache when the largest
-contiguous free block can no longer hold what is being asked for. It is bounded
-and rate-limited, so it trims rather than emptying the cache, and it escalates
-only if the pressure persists.
-
-In normal play the placement policy does the work and the rescue never fires.
+**A rescue path** evicts from the engine's texture cache when the largest free
+block can no longer hold what is being asked for. Bounded and rate-limited. On a
+correctly configured install it does not fire.
 
 ## Installing
 
-Drop `d3d9.dll` next to `DAOrigins.exe`, in `bin_ship`.
-
-Optionally add a `lyrium.ini` beside it:
+Drop `d3d9.dll` next to `DAOrigins.exe`, in `bin_ship`. Optionally add
+`lyrium.ini` beside it:
 
 ```
 [lyrium]
 logging=1
 overlay=1
-```
-
-`overlay` toggles a panel on Shift+F12. `logging` writes a session log to
-`lyrium_logs/`. Both are off by default. See `include/lyrium/config.h` for the
-full set of keys.
-
-**Run the game in borderless windowed mode if you can.** Dragon Age loses the
-Direct3D device every time you alt-tab out of fullscreen, and rebuilding it is
-where the game's own long-standing pure-virtual crash lives — it has nothing to
-do with memory and nothing this mod does can prevent it. A borderless window
-never loses the device, so the crash never gets its opportunity.
-
-## Reclaiming the engine's startup pool
-
-The engine reserves **850 MB** for its own memory pool the moment it starts, and
-on a 2 GB install it does not need all of it. Handing some back is the largest
-single improvement available:
-
-```
-[lyrium]
 main_pool_mb=768
 ```
 
-On a heavily modded 2 GB install this moved the largest unbroken block of free
-address space from **2.4 MB to 110 MB**, and the emergency eviction path stopped
-running almost entirely. It is off by default because the right value depends on
-your mod load, and because getting it wrong is not obvious.
-
-**How to tune it.** Start at 768. If the game is happy, you are done. There is
-little to gain below 704 and real risk further down.
-
-**Both ways it goes wrong:**
-
-| symptom | meaning |
-|---|---|
-| textures flickering, out-of-memory crashes in long sessions | value too **high** — try 704 |
-| **missing scenery or characters**, or a hang during a level load | value too **low** — raise it, or set 0 |
-
-The second one is the one to watch for, because the game does not complain: it
-skips whatever it could not fit and carries on, so you get a running game with
-holes in it rather than an error. `main_pool_mb=0` restores the stock 850 MB
-pool exactly.
-
-The patch verifies the exact instruction and its original value before writing
-anything, and declines entirely on a game build it does not recognise.
-
-The panel leads with the number that predicts the crash: **headroom**, the
-largest single unbroken block of address space still available, with a mark
-showing where the rescue arms. Below it is how much memory the fix is keeping
-out of that space, and a histogram of free-block sizes running from large blocks
-on the left to unusable slivers on the right. Fragmentation is that distribution
-shifting rightward over a session -- the same free bytes breaking into more and
-smaller pieces -- which is the failure itself rather than a proxy for it. Folds
-underneath carry the detailed texture, pool and engine counters.
+`overlay` toggles a panel on Shift+F12. `logging` writes a session log to
+`lyrium_logs/`. Both are off by default. `include/lyrium/config.h` has every key.
 
 If the game does not start, launch `bin_ship\DAOrigins.exe` directly rather than
 through the launcher — `DAOriginsConfig.exe` crashes on modern hardware for
 reasons unrelated to this mod, and it stops the chain before the game runs.
 
+**Run in borderless windowed mode.** Alt-tabbing out of fullscreen makes the game
+rebuild the Direct3D device, and the game has a long-standing crash in that path
+that has nothing to do with memory. A borderless window never loses the device.
+
+## main_pool_mb
+
+Hands part of the engine's 850 MB startup pool back to the address space. Off by
+default because the right value depends on your mod load.
+
+Measured on a heavily modded 2 GB install. Largest unbroken free block below the
+2 GB line, during play:
+
+| `main_pool_mb` | largest free block |
+|---|---|
+| unset (850) | 2.4 MB |
+| 800 | 46 MB |
+| 768 | 110 MB |
+| 704 | 78 MB |
+| 512 | engine starves |
+
+Start at 768. Below 704 there is nothing left to gain and real risk.
+
+| symptom | meaning |
+|---|---|
+| flickering, out-of-memory crashes in long sessions | too high — try 704 |
+| missing scenery or characters, hang during a level load | too low — raise it |
+
+The second one is silent. The engine skips whatever did not fit and carries on,
+so you get a running game with holes in it rather than an error. Nothing in the
+log detects this; only looking at the screen does.
+
+`main_pool_mb=0` restores the stock pool. The patch verifies the exact
+instruction and its original value before writing, and declines on a game build
+it does not recognise.
+
+On a 4 GB (LAA) install this matters much less — there is a second 2 GB above the
+line to fall back on.
+
+## The overlay
+
+Leads with **headroom**: the largest single unbroken block still available, with
+a mark where the rescue arms. Below it, how much memory relocation is keeping out
+of the address space, and a histogram of free-block sizes from large blocks on
+the left to unusable slivers on the right. Fragmentation is that distribution
+moving rightward. Folds underneath carry texture, pool and engine counters.
+
 ## Safety
 
-The engine hooks patch fixed addresses in `daorigins.exe`, so they are specific
-to one build. Every target is verified against a recorded prologue and a
-SHA-256 of its function body **before anything is written**, and if a single one
-does not match, nothing is patched at all and the log says which byte differed.
-A different build of the game leaves the executable untouched rather than
-patched at the wrong address.
+The engine hooks patch fixed addresses in `daorigins.exe`. Every target is
+verified against a recorded prologue and a SHA-256 of its function body before
+anything is written, and if one does not match, nothing is patched and the log
+says which byte differed. A different build of the game is left untouched.
 
 ## Building
 
-Two configurations, both 32-bit. The DLL needs an i686 MinGW-w64 GCC 14 or
-newer; the tests build as native 32-bit Linux binaries so pointer width matches
-what ships.
+Two configurations, both 32-bit. The DLL needs i686 MinGW-w64 GCC 14 or newer;
+the tests build as native 32-bit Linux binaries so pointer width matches what
+ships.
 
 ```
-cmake --preset dll-win32   && cmake --build --preset dll-win32
+cmake --preset dll-win32     && cmake --build --preset dll-win32
 cmake --preset tests-linux32 && cmake --build --preset tests-linux32 && ctest --preset tests-linux32
 ```
 
-See `CLAUDE.md` for the architecture, the toolchain details, and how to read a
-session log, and [docs/design-vs-eluvian.md](docs/design-vs-eluvian.md) for
-diagrams of what changed from the implementation this forked from and why the
-eviction behaviour is safer despite doing less work.
+See `CLAUDE.md` for architecture and toolchain details.
