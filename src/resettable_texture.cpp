@@ -20,12 +20,75 @@
 #include "lyrium/containers/unordered_set.h"
 #include "lyrium/containers/vector.h"
 #include "lyrium/diag/texture_size.h"
+#include "lyrium/log.h"
+#include "lyrium/stats.h"
+#include "lyrium/texture/staging_pool.h"
 
 namespace lyrium
 {
 
 namespace
 {
+
+// One pool for the process: staging textures are children of the single device
+// the game creates. SYSTEMMEM resources survive device Reset, so the pool needs
+// no reset handling, and it is never destroyed for the same reason nothing
+// static here is. The budget is the pool's permanent address-space cost; see
+// staging_pool.h for why paying it is the right trade.
+auto staging_pool() -> texture::BasicStagingPool<::IDirect3DTexture9 *, STDAllocator> &
+{
+    static auto pool = texture::BasicStagingPool<::IDirect3DTexture9 *, STDAllocator>{24ull * 1024ull * 1024ull, 64u};
+    return pool;
+}
+
+std::mutex staging_pool_mutex{};
+
+auto acquire_staging(
+    ::IDirect3DDevice9 *device,
+    CreateTextureFn create_texture,
+    std::uint32_t width,
+    std::uint32_t height,
+    ::D3DFORMAT format) -> ::IDirect3DTexture9 *
+{
+    const auto shape =
+        texture::StagingShape{.width = width, .height = height, .format = static_cast<std::uint32_t>(format)};
+    {
+        auto lock = std::scoped_lock{staging_pool_mutex};
+        if (const auto pooled = staging_pool().acquire(shape); pooled.has_value())
+        {
+            stats::staging_reused.fetch_add(1u, std::memory_order_relaxed);
+            return *pooled;
+        }
+    }
+
+    auto *staging = static_cast<::IDirect3DTexture9 *>(nullptr);
+    const auto result = create_texture(device, width, height, 1u, 0u, format, D3DPOOL_SYSTEMMEM, &staging, nullptr);
+    if (FAILED(result) || staging == nullptr)
+    {
+        return nullptr;
+    }
+    stats::staging_created.fetch_add(1u, std::memory_order_relaxed);
+    return staging;
+}
+
+auto release_staging(
+    ::IDirect3DTexture9 *staging,
+    std::uint32_t width,
+    std::uint32_t height,
+    ::D3DFORMAT format,
+    std::uint64_t bytes) -> void
+{
+    const auto shape =
+        texture::StagingShape{.width = width, .height = height, .format = static_cast<std::uint32_t>(format)};
+    {
+        auto lock = std::scoped_lock{staging_pool_mutex};
+        if (staging_pool().offer(shape, bytes, staging))
+        {
+            return;
+        }
+    }
+    staging->Release();
+}
 
 class ResettableTexture;
 
@@ -602,11 +665,12 @@ class ResettableTexture final : public ::IDirect3DTexture9
             return D3DERR_DEVICELOST;
         }
 
+        const auto started = now_us();
         const auto &layout = layouts_[level];
-        auto *staging = static_cast<::IDirect3DTexture9 *>(nullptr);
-        auto result = create_texture_(
-            device_, layout.width, layout.height, 1u, 0u, shape_.format, D3DPOOL_SYSTEMMEM, &staging, nullptr);
-        if (SUCCEEDED(result) && staging != nullptr)
+        const auto staging_bytes = static_cast<std::uint64_t>(layout.pitch) * layout.rows;
+        auto *staging = acquire_staging(device_, create_texture_, layout.width, layout.height, shape_.format);
+        auto result = staging != nullptr ? D3D_OK : E_OUTOFMEMORY;
+        if (staging != nullptr)
         {
             auto locked = ::D3DLOCKED_RECT{};
             result = staging->LockRect(0u, &locked, nullptr, 0u);
@@ -646,9 +710,11 @@ class ResettableTexture final : public ::IDirect3DTexture9
             {
                 destination_surface->Release();
             }
-            staging->Release();
+            release_staging(staging, layout.width, layout.height, shape_.format, staging_bytes);
         }
         texture->Release();
+        stats::uploads.fetch_add(1u, std::memory_order_relaxed);
+        stats::upload_us.fetch_add(static_cast<std::uint64_t>(now_us() - started), std::memory_order_relaxed);
         return result;
     }
 
