@@ -155,9 +155,11 @@ and against 2 GB on an unpatched one. Because there is no relocation, the SHA-25
 executes, so `dao/targets.h` is verified against that binary rather than assumed
 to match it.
 
-**The address space reaches a steady state and holds it.** This is the result the
-project exists to produce, measured over a 2.5 hour session, 1842 samples on the
-LAA install:
+**On the LAA install the address space reaches a steady state and holds it.**
+Measured over a 2.5 hour session, 1842 samples. Read the qualifier: this is one
+install and one window, and the section after it records where the plateau ends.
+**It does not describe the 2 GB install at all** -- see "What a 2 GB session
+actually looks like" below.
 
 | | at startup | after load-in | 2.5 hours later |
 |---|---|---|---|
@@ -206,6 +208,28 @@ disarm the rest of a save, and `failure_ladder_limit=0` restores the old
 behaviour without a rebuild. The `rescue[...]` line carries `ladders=` and
 `abandoned=` so a session that stops escalating is distinguishable from one that
 stopped failing.
+
+### What a 2 GB session actually looks like
+
+The plateau above is an LAA result. On the unpatched 2 GB install, with
+relocation on and the pool patch off, the largest block below the line **does not
+settle**. Four sessions, all sealing cleanly, all with `failures=0`:
+
+| | startup | load-in | low point | at exit |
+|---|---|---|---|---|
+| `below2g` | 604 MB | 149 MB | **2.4 - 16.8 MB** | 52 - 105 MB |
+| free regions | 162 | 215 - 240 | 303 - 333 | 234 - 270 |
+
+It goes far below the 32 MB rescue floor, stays there, and recovers when the
+working set falls -- the recovery is real and repeatable, not noise. There is no
+upper half to spill into, and `alloc[]` confirms it: `high_count=0` in every
+sample.
+
+Two things follow. The rescue reads `shape=exhausted` at the bottom, which is
+correct and also means eviction cannot help -- no rearrangement serves a request
+the total free space cannot hold. And the sessions still end in the game's own
+`0x0046b1b3` pure-virtual crash rather than in a failed texture create, so
+`failures=0` is not the same as a healthy session.
 
 **Which free-block figure the rescue is measured against depends on the install**
 (`diag::headroom_bytes`, `include/lyrium/diag/va_region.h`). The probe used to
@@ -374,12 +398,12 @@ The main mechanisms, each mostly independent:
   routes every lock through the mapped section instead. The same wrapper is what
   lets a DEFAULT texture survive device `Reset`, which a plain DEFAULT resource
   does not.
-- **Heap arena -- removed, and do not rebuild it.** `allocators/arena.h` and
-  `allocators/heap_interposer.h` served `d3d9.dll`'s large heap allocations from
-  one contiguous reservation, on the theory that the runtime's MANAGED texture
-  duplicates were what cut the low 2 GB into separate holes. They are not, and
-  the import table says why. See "Why interposing on d3d9's allocator cannot
-  work" below. Recoverable from history if the premise ever changes.
+- **LocalAlloc arena** (`allocators/arena.h`,
+  `allocators/local_alloc_interposer.h`, `allocators/local_alloc_policy.h`) --
+  serves `d3d9.dll`'s large `LocalAlloc` requests from one contiguous
+  reservation. **Off by default (`local_arena_mb=0`), and it works exactly as
+  designed while still losing to relocation.** See "What the MANAGED duplicate
+  actually is" and "Why the arena loses to relocation" below before touching it.
 
 - **Texture recycler** (`texture_recycler.h`) -- optional reuse of released
   textures keyed by shape, with a byte budget.
@@ -403,38 +427,88 @@ Runtime configuration is read from `lyrium.ini` next to the game executable
 (`config.h` has every key and its default); logs go to `lyrium_logs/` when
 enabled.
 
-### Why interposing on d3d9's allocator cannot work
+### What the MANAGED duplicate actually is
 
-Two live sessions, two configurations, the same result. With relocation on, the
-arena installed correctly and reported `served=0/0kb passed=2936`. With
-relocation **off** -- the configuration where the MANAGED duplicates genuinely
-exist -- it reported `served=0/0kb passed=1877` while `managed=192643636` sat in
-the same log. The hook was live and called 1877 times. Not one call reached the
-512 KB threshold.
+Measured, not inferred, by three independent probes that agree. This answers a
+question open since the fork, and it is what turned "the arena served zero" from
+a mystery into arithmetic.
 
-The reason is the import table of the real `SysWOW64\d3d9.dll`. Its complete
-memory surface is `GetProcessHeap`, `HeapAlloc`, `HeapFree` and `LocalAlloc`
-from KERNEL32, plus `malloc` and `free` from msvcrt. **No `VirtualAlloc`.** Only
-`HeapAlloc` was redirected, so the duplicates arrive through `LocalAlloc` or
-msvcrt `malloc` -- or from the display driver's UMD, which d3d9 delegates
-surface backing to and which imports nothing of ours at all.
+**It is `d3d9!LocalAlloc`.** Roughly 137 calls and 211 MB per session, largest
+single request 16 MB, reaching the address space through `RtlAllocateHeap`'s
+large path -- where a request over the NT heap's 508 KB `VirtualMemoryThreshold`
+gets its own reservation instead of being sub-allocated. That is what turns 137
+textures into 137 separate regions in a 2 GB space.
 
-Reaching them would mean interposing `RtlAllocateHeap` process-wide, which is a
-larger blast radius than the one that already crashed the game twice on first
-contact, and it would carry every allocation the engine, PhysX and CUDA make.
-Weigh that against what relocation already measures: 3224 creates and zero
-failures over six hours on LAA, against a relocation-off run that reached
-`E_OUTOFMEMORY` at create #422 in about two minutes.
+How each probe was made to answer, and what each one cost:
 
-The same fact answers pooling and jemalloc/tcmalloc, which get proposed for this
-regularly. Both are the right *pattern* -- and pooling is already deployed where
-the allocation is ours, in `texture/staging_pool.h`, which measured 96% reuse.
-Neither is reachable for memory we do not allocate. A better allocator behind a
-call nobody makes is still zero. Separately, jemalloc and tcmalloc take their
+| probe | result |
+|---|---|
+| `d3d9!HeapAlloc` IAT redirect | 1877 calls, **none** 512 KB or larger |
+| context marker across `CreateTexture` | 140 allocations, 245 MB, largest 16,440 KB |
+| `d3d9!LocalAlloc` counting shim | 180 large calls, 280 MB, largest 16,384 KB |
+| the arena itself | 137 served, 211 MB, against `managed=213741704` |
+
+The same run with relocation **on** records one `d3d_create` allocation of
+532 KB. That is the fix working, seen from the allocation side for the first
+time.
+
+Two attribution methods that cannot work here, both tried:
+
+- **`__builtin_return_address(0)` at the syscall.** `RtlAllocateHeap` and
+  `VirtualAlloc` are what call `NtAllocateVirtualMemory`, so there is always an
+  allocator frame between the client and the syscall. Every record resolved to
+  `ntdll.dll` or `KERNEL32.DLL`, which is true and useless.
+- **A deeper stack walk.** `RtlCaptureStackBackTrace` follows the EBP chain and
+  optimised 32-bit system code omits frame pointers, so eight frames got no
+  further than one. No depth fixes it. Marking the window with a thread-local
+  across our own hooks (`diag/alloc_context.h`) is what worked.
+
+Set `allocation_watch=1` to reproduce any of this. The threshold is 512 KB, not
+the 8 MB it was for a long time -- at 8 MB the watch sat above its own subject
+and recorded nothing in any session.
+
+### Why the arena loses to relocation
+
+`local_alloc_interposer.h` is built against that measurement and works. Two
+consecutive runs served **137 allocations and 211.4 MB each**, identical
+`largest_free_kb=127318`, `full_fallbacks=0`, no internal fragmentation, holding
+essentially the whole MANAGED set. The mechanism is correct.
+
+It still loses, and the reason is arithmetic rather than a defect:
+
+**Containment changes the shape. Relocation changes the amount.** The arena puts
+211 MB in one region instead of 137. Relocation means the 211 MB is never
+allocated. On a 2 GB install the amount is what binds.
+
+| | creates | failures | outcome |
+|---|---|---|---|
+| relocation on | 2144 | 0 | healthy, `below2g` recovered to 105 MB |
+| arena, relocation off | 684 | 0 | `shape=exhausted`, `below2g` 1.7 MB |
+
+And the two are alternatives, not complements: with relocation on there is
+exactly one large `LocalAlloc` in a session for the arena to catch. Sizing does
+not rescue it either -- a perfectly sized 211 MB arena still costs 211 MB that
+relocation costs roughly nothing.
+
+**Do not rebuild this against a better allocator.** TLSF, slab allocators and
+segregated free lists get proposed regularly and are the right *pattern* -- the
+staging pool (`texture/staging_pool.h`) is exactly that and measured 96% reuse.
+But they all improve how a region is carved up, and the arena never fragmented
+internally in the first place. jemalloc and tcmalloc additionally take their
 chunks with `VirtualAlloc`, and in a 32-bit process those chunks *are* what
-fragments the space; the 1.4 MB and 2.8 MB requests that fail here exceed their
-bins and become dedicated mappings anyway, which is exactly what the NT heap
-already does above its 508 KB threshold.
+fragments the space.
+
+**The escape hazard is real and only partly understood.** The first build covered
+`LocalFree` alone and died with an access violation in `nvd3dum.dll` -- what a
+heap does when handed a pointer it never allocated, surfacing in whichever module
+touches it next. `d3d9.dll` also imports `HeapFree` and msvcrt `free`, and
+`LocalAlloc(LMEM_FIXED)` returns a process-heap pointer interchangeable with
+`HeapAlloc(GetProcessHeap(), ...)`, so all three are now covered. But two
+subsequent runs recorded `via_heap=0 via_crt=0` -- the added coverage never
+fired, so it cannot be what stopped the crash, and the crash has not recurred.
+That is unexplained. `nvd3dum.dll` imports `HeapFree`, `HeapSize`,
+`HeapReAlloc`, `LocalFree`, `GlobalFree` and `VirtualFree`, none of them ours,
+so if a served pointer ever leaves `d3d9.dll` there is no shortage of doors.
 
 ## Constraints to keep in mind
 
