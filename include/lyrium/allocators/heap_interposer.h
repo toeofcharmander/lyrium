@@ -9,6 +9,7 @@
 #include <windows.h>
 
 #include "lyrium/allocators/arena.h"
+#include "lyrium/hooks/prologue.h"
 #include "lyrium/log.h"
 #include "lyrium/utils.h"
 
@@ -309,7 +310,16 @@ inline auto install_inline_hook(void *target_address, void *detour, void **tramp
         return false;
     }
 
-    static constexpr auto patch_len = std::size_t{5};
+    // Measured, not assumed. A five-byte patch into ntdll!RtlReAllocateHeap
+    // split a push imm32 and the game died executing the wreckage; see
+    // hooks/prologue.h. Zero means the prologue is not something we can copy
+    // safely, and the only correct response is to decline the hook.
+    const auto patch_len = hooks::patch_length(target, 16u);
+    if (patch_len == 0u)
+    {
+        return false;
+    }
+
     auto *trampoline =
         static_cast<std::uint8_t *>(::VirtualAlloc(nullptr, 64u, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE));
     if (trampoline == nullptr)
@@ -328,9 +338,17 @@ inline auto install_inline_hook(void *target_address, void *detour, void **tramp
     {
         return false;
     }
-    const auto jump = static_cast<std::int32_t>(static_cast<std::uint8_t *>(detour) - (target + patch_len));
+    const auto jump = static_cast<std::int32_t>(static_cast<std::uint8_t *>(detour) - (target + hooks::jump_length));
     target[0] = 0xE9;
     std::memcpy(target + 1, &jump, sizeof(jump));
+    // Any bytes between the jump and the instruction boundary belong to
+    // instructions now living in the trampoline. Fill them so a disassembler --
+    // or a stray branch into the middle of the patch -- sees nops rather than
+    // the tail of something that no longer starts here.
+    for (auto i = hooks::jump_length; i < patch_len; ++i)
+    {
+        target[i] = 0x90;
+    }
     ::VirtualProtect(target, patch_len, protection, &protection);
     ::FlushInstructionCache(::GetCurrentProcess(), target, patch_len);
     return true;
