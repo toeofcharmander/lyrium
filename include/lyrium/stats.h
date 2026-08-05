@@ -15,6 +15,19 @@ inline std::atomic<std::uint64_t> d3d_create_failures{};
 // GPU, how long that took in total, and whether the staging texture was reused
 // or created through the driver. reused vs created is the cutscene-stall
 // metric: every created is a synchronous driver allocation on the load path.
+// Time spent inside the driver's own CreateTexture, split by the pool the
+// texture ended up in. The two cost radically different things: MANAGED
+// allocates system memory and returns, with the runtime uploading lazily and
+// free to evict back out under pressure, while DEFAULT must allocate real video
+// memory synchronously and can never be paged out. Every other timer in this
+// path came back too small to explain the cutscene stall, and this call -- the
+// one thing that changes when relocation is switched off -- was never measured.
+inline std::atomic<std::uint64_t> create_default_calls{};
+inline std::atomic<std::uint64_t> create_default_us{};
+inline std::atomic<std::uint64_t> create_other_calls{};
+inline std::atomic<std::uint64_t> create_other_us{};
+inline std::atomic<std::uint64_t> create_slowest_us{};
+
 // The lock path around the upload. Every LockRect maps the whole mip-chain
 // section and every UnlockRect tears it down again, so this is per-lock kernel
 // page-table work that upload_us never covered. Measured because the upload

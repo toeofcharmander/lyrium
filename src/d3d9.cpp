@@ -153,6 +153,7 @@ auto log_ledger_snapshot(std::string_view reason, const lyrium::diag::VaStats &)
         "unknown={} live_relocated={} live_relocated_bytes={} creates={} failures={} overrides={} "
         "uploads={} upload_ms={} staging_new={} staging_reused={} "
         "locks={} map_ms={} unmap_ms={} sections={} section_ms={} "
+        "cre_def={}/{}ms cre_oth={}/{}ms cre_max={}us "
         "override_bytes={} reverts={}",
         reason,
         totals.live_count,
@@ -178,6 +179,11 @@ auto log_ledger_snapshot(std::string_view reason, const lyrium::diag::VaStats &)
         lyrium::stats::unmap_us.load(std::memory_order_relaxed) / 1000u,
         lyrium::stats::mapping_creates.load(std::memory_order_relaxed),
         lyrium::stats::mapping_create_us.load(std::memory_order_relaxed) / 1000u,
+        lyrium::stats::create_default_calls.load(std::memory_order_relaxed),
+        lyrium::stats::create_default_us.load(std::memory_order_relaxed) / 1000u,
+        lyrium::stats::create_other_calls.load(std::memory_order_relaxed),
+        lyrium::stats::create_other_us.load(std::memory_order_relaxed) / 1000u,
+        lyrium::stats::create_slowest_us.load(std::memory_order_relaxed),
         lyrium::stats::pool_override_bytes.load(std::memory_order_relaxed),
         lyrium::stats::pool_reverts.load(std::memory_order_relaxed));
 
@@ -340,6 +346,30 @@ struct RescueParts
 
 // Built once from the loaded configuration, like the placement policy. Another
 // stepping stone until the composition root owns these.
+// Attributes one driver CreateTexture call to the pool it was made in. The
+// slowest single call is kept because a stall is one long call, not a raised
+// average, and an average over thousands of cheap creates would hide it.
+auto note_create_cost(::D3DPOOL pool, std::int64_t elapsed_us) -> void
+{
+    const auto us = elapsed_us < 0 ? std::uint64_t{0} : static_cast<std::uint64_t>(elapsed_us);
+    if (pool == D3DPOOL_DEFAULT)
+    {
+        lyrium::stats::create_default_calls.fetch_add(1u, std::memory_order_relaxed);
+        lyrium::stats::create_default_us.fetch_add(us, std::memory_order_relaxed);
+    }
+    else
+    {
+        lyrium::stats::create_other_calls.fetch_add(1u, std::memory_order_relaxed);
+        lyrium::stats::create_other_us.fetch_add(us, std::memory_order_relaxed);
+    }
+
+    auto slowest = lyrium::stats::create_slowest_us.load(std::memory_order_relaxed);
+    while (us > slowest &&
+           !lyrium::stats::create_slowest_us.compare_exchange_weak(slowest, us, std::memory_order_relaxed))
+    {
+    }
+}
+
 auto rescue_parts() -> RescueParts &
 {
     static auto parts = lyrium::NeverDestroyed<RescueParts>{lyrium::policy::RescueConfig{
@@ -674,7 +704,10 @@ __declspec(dllexport) ::HRESULT WINAPI IDirect3DDevice9_CreateTexture_hook(
         }
     }
 
+    const auto create_started = lyrium::now_us();
     auto res = original(that, Width, Height, Levels, Usage, Format, pool, ppTexture, pSharedHandle);
+    note_create_cost(pool, lyrium::now_us() - create_started);
+
     if (pool_overridden && SUCCEEDED(res) && ppTexture != nullptr && *ppTexture != nullptr)
     {
         auto *created = *ppTexture;
