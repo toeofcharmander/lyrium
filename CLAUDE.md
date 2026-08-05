@@ -193,6 +193,20 @@ Do not read that trough as a rescue defect without checking the `headroom=`,
 those values, pinned by `RescueCoordinator.RecordsTheHeadroomItActuallySaw` and
 the trough case in the policy tests.
 
+**The failure ladder gives up, on purpose.** A 2 GB session recorded
+`on_failure=182 evictions=122 managed=121 clears=0 released=0` across sixty
+failed creates, with `largest_free` pinned at 106,496 bytes and
+`shape=exhausted` throughout: the ladder reached its terminal rung sixty times
+and moved nothing. That rung clears the engine's entire texture cache and calls
+`EvictManagedResources`, and every `~D3DResetable` installs the abstract vtable
+before unregistering, so repeating it feeds the game's own reset race for no
+measured return. `RescueConfig::failure_ladder_limit` (default 3) bounds it per
+*pressure episode* -- relieving pressure re-arms it, so one bad minute cannot
+disarm the rest of a save, and `failure_ladder_limit=0` restores the old
+behaviour without a rebuild. The `rescue[...]` line carries `ladders=` and
+`abandoned=` so a session that stops escalating is distinguishable from one that
+stopped failing.
+
 **Which free-block figure the rescue is measured against depends on the install**
 (`diag::headroom_bytes`, `include/lyrium/diag/va_region.h`). The probe used to
 take the smaller of `largest_free` and `largest_free_below_2g` on every install.
@@ -259,6 +273,21 @@ on the create path. It is safe on the sampler thread because `sample_va()`
 completes *before* `snapshot_mutex_` is taken, so even a 205 ms walk cannot block
 the render thread's `try_snapshot`.
 
+**It ran on the create path anyway, and the rule was written while it did.** A
+failed texture create called `Sampler::sample_now("create_failed")` inline. One
+2 GB session logged 240 of those, each carrying `walk_us` of roughly 7 ms --
+about 1.7 seconds of walking on the render thread, during the failure cascade it
+was describing. A failure now calls `Sampler::request_sample()`, which sets one
+atomic; the sampler thread polls it every 100 ms (`diag/sample_schedule.h`,
+tested on Linux because `sampler.h` reaches `psapi.h` and cannot be) and a whole
+burst of failures collapses into one walk.
+
+Two consequences when reading a log. `va[create_failed]` now describes the
+moments just *after* the failure rather than the instant of it, and there is one
+of them per 100 ms rather than one per failure. The `rescue[...]` line beside it
+is unchanged, because the rescue has always decided from the sampler's cached
+figures rather than from a fresh walk.
+
 ## Architecture
 
 Almost all logic lives in headers under `include/lyrium/` (an INTERFACE library
@@ -281,7 +310,7 @@ that name no D3D or Windows type, so they compile and are tested on Linux:
 `policy/rescue_coordinator.h` executes plans through abstract seams. The D3D
 hooks convert at the boundary and contain no decisions of their own.
 
-**Never patch a prologue you have not measured.** `hooks/prologue.h` exists
+**Never patch a prologue you have not measured.** `hooks/prologue.h` existed
 because a five-byte inline hook was applied to `ntdll!RtlReAllocateHeap`, whose
 32-bit prologue is `6A 0C` (`push 0Ch`, two bytes) followed by `68 imm32` (five
 bytes). Five lands three bytes inside the second instruction, so the trampoline
@@ -289,9 +318,16 @@ ended in a `push` whose immediate was assembled out of jump bytes and the game
 died executing an address it could not read. `RtlFreeHeap` and `RtlSizeHeap`
 begin `8B FF 55 8B EC`, the hotpatch prologue, which is exactly five bytes of
 three whole instructions -- which is why two of the three hooks worked and made
-the third look like something else. `patch_length()` returns 0 for anything it
-does not recognise, including relative calls and jumps whose displacements cannot
-survive being copied, and 0 means decline the hook rather than guess.
+the third look like something else. Its `patch_length()` returned 0 for
+anything it did not recognise, including relative calls and jumps whose
+displacements cannot survive being copied, and 0 meant decline the hook rather
+than guess.
+
+The header went with the heap interposer that was its only caller -- the engine
+hooks carry recorded prologue bytes per target in `dao/targets.h` and verify
+those instead, so their lengths are correct by construction. **Any new inline
+hook into code lyrium does not own needs it back** (`git log -- include/lyrium/hooks/prologue.h`).
+The rule survives the file: five bytes is a guess, and this one cost a crash.
 
 **Arithmetic does not live in a Windows-only header.** Anything that includes
 `windows.h` or `psapi.h` cannot be reached by the test suite, so any calculation
@@ -338,21 +374,12 @@ The main mechanisms, each mostly independent:
   routes every lock through the mapped section instead. The same wrapper is what
   lets a DEFAULT texture survive device `Reset`, which a plain DEFAULT resource
   does not.
-- **Heap arena** (`allocators/arena.h`, `allocators/heap_interposer.h`) -- serves
-  `d3d9.dll`'s large heap allocations from one contiguous reservation, so the
-  runtime's texture duplicates stop cutting the low 2 GB into separate holes. The
-  arena coalesces on every free, so the churn heals inside a boundary nothing
-  else can see. **Off by default** (`heap_arena_mb=0`) and it has not yet
-  demonstrated value: in its first live session it installed correctly and served
-  **zero** allocations, because relocation was on and there were therefore no
-  MANAGED duplicates to catch. The two are alternatives, not complements -- to
-  test the arena, run it with `texture_pool_default=0`.
-
-  It hooks `RtlFreeHeap`, `RtlSizeHeap` and `RtlReAllocateHeap` process-wide plus
-  `d3d9.dll`'s `HeapAlloc` import, which is the largest blast radius in the
-  project. Everything is resolved and verified before a byte is patched, because
-  an earlier version installed the free hooks first and left them live when a
-  later step failed.
+- **Heap arena -- removed, and do not rebuild it.** `allocators/arena.h` and
+  `allocators/heap_interposer.h` served `d3d9.dll`'s large heap allocations from
+  one contiguous reservation, on the theory that the runtime's MANAGED texture
+  duplicates were what cut the low 2 GB into separate holes. They are not, and
+  the import table says why. See "Why interposing on d3d9's allocator cannot
+  work" below. Recoverable from history if the premise ever changes.
 
 - **Texture recycler** (`texture_recycler.h`) -- optional reuse of released
   textures keyed by shape, with a byte budget.
@@ -375,6 +402,39 @@ routed through `allocators/imgui_allocator.h` the same way.
 Runtime configuration is read from `lyrium.ini` next to the game executable
 (`config.h` has every key and its default); logs go to `lyrium_logs/` when
 enabled.
+
+### Why interposing on d3d9's allocator cannot work
+
+Two live sessions, two configurations, the same result. With relocation on, the
+arena installed correctly and reported `served=0/0kb passed=2936`. With
+relocation **off** -- the configuration where the MANAGED duplicates genuinely
+exist -- it reported `served=0/0kb passed=1877` while `managed=192643636` sat in
+the same log. The hook was live and called 1877 times. Not one call reached the
+512 KB threshold.
+
+The reason is the import table of the real `SysWOW64\d3d9.dll`. Its complete
+memory surface is `GetProcessHeap`, `HeapAlloc`, `HeapFree` and `LocalAlloc`
+from KERNEL32, plus `malloc` and `free` from msvcrt. **No `VirtualAlloc`.** Only
+`HeapAlloc` was redirected, so the duplicates arrive through `LocalAlloc` or
+msvcrt `malloc` -- or from the display driver's UMD, which d3d9 delegates
+surface backing to and which imports nothing of ours at all.
+
+Reaching them would mean interposing `RtlAllocateHeap` process-wide, which is a
+larger blast radius than the one that already crashed the game twice on first
+contact, and it would carry every allocation the engine, PhysX and CUDA make.
+Weigh that against what relocation already measures: 3224 creates and zero
+failures over six hours on LAA, against a relocation-off run that reached
+`E_OUTOFMEMORY` at create #422 in about two minutes.
+
+The same fact answers pooling and jemalloc/tcmalloc, which get proposed for this
+regularly. Both are the right *pattern* -- and pooling is already deployed where
+the allocation is ours, in `texture/staging_pool.h`, which measured 96% reuse.
+Neither is reachable for memory we do not allocate. A better allocator behind a
+call nobody makes is still zero. Separately, jemalloc and tcmalloc take their
+chunks with `VirtualAlloc`, and in a 32-bit process those chunks *are* what
+fragments the space; the 1.4 MB and 2.8 MB requests that fail here exceed their
+bins and become dedicated mappings anyway, which is exactly what the NT heap
+already does above its 508 KB threshold.
 
 ## Constraints to keep in mind
 

@@ -632,3 +632,87 @@ TEST(RescueCoordinator, AFailedCreateStillReachesTheFullClear)
 
     EXPECT_GT(f.backend.clear_calls, 0);
 }
+
+// ---------------------------------------------------------------------------
+// Giving up on a failure path that is not reclaiming anything.
+//
+// A 2 GB session logged on_failure=182, evictions=122, managed=121, clears=0 and
+// released=0 across sixty failed creates, with the largest free block pinned at
+// 106,496 bytes the whole time. The ladder ran to its terminal rung sixty times
+// and moved nothing. Bounding it costs a safety net that was demonstrably not
+// catching anything, and buys not running the most destructive action available
+// sixty times into the game's own reset race.
+// ---------------------------------------------------------------------------
+
+TEST(RescueCoordinator, CountsTheFailureLaddersItHasCompleted)
+{
+    Fixture f{};
+    auto coordinator = f.make();
+    f.probe.set(1u * mb);
+    f.backend.evict_reclaims_nothing = true;
+
+    EXPECT_EQ(coordinator.stats().failure_ladders, 0u);
+
+    coordinator.consider(4u * mb, 3u);
+    EXPECT_EQ(coordinator.stats().failure_ladders, 1u);
+
+    coordinator.consider(4u * mb, 3u);
+    EXPECT_EQ(coordinator.stats().failure_ladders, 2u);
+}
+
+TEST(RescueCoordinator, StopsActingOnTheFailurePathOnceTheLadderLimitIsReached)
+{
+    auto config = RescueConfig{};
+    config.failure_ladder_limit = 3u;
+
+    Fixture f{};
+    auto coordinator = f.make(config);
+    f.probe.set(1u * mb);
+    f.backend.evict_reclaims_nothing = true;
+
+    for (auto ladder = 0u; ladder < config.failure_ladder_limit; ++ladder)
+    {
+        ASSERT_TRUE(coordinator.consider(4u * mb, 3u).acted) << "ladder " << ladder << " should still have acted";
+    }
+
+    const auto clears_at_the_limit = f.backend.clear_calls;
+    const auto managed_at_the_limit = f.backend.managed_calls;
+
+    for (auto attempt = 1u; attempt <= 3u; ++attempt)
+    {
+        EXPECT_FALSE(coordinator.consider(4u * mb, attempt).acted) << "attempt " << attempt << " acted past the limit";
+    }
+
+    EXPECT_EQ(f.backend.clear_calls, clears_at_the_limit);
+    EXPECT_EQ(f.backend.managed_calls, managed_at_the_limit);
+    EXPECT_GT(coordinator.stats().abandoned, 0u) << "giving up must be counted, or the log cannot show it happened";
+}
+
+// The limit is per pressure episode, not per session. A save that recovers must
+// get the safety net back, or one bad minute disarms the rest of the session.
+TEST(RescueCoordinator, RelievedPressureRearmsTheFailureLadder)
+{
+    auto config = RescueConfig{};
+    config.failure_ladder_limit = 2u;
+
+    Fixture f{};
+    auto coordinator = f.make(config);
+    f.probe.set(1u * mb);
+    f.backend.evict_reclaims_nothing = true;
+
+    for (auto ladder = 0u; ladder < config.failure_ladder_limit; ++ladder)
+    {
+        ASSERT_TRUE(coordinator.consider(4u * mb, 3u).acted);
+    }
+    ASSERT_FALSE(coordinator.consider(4u * mb, 3u).acted);
+
+    // The space recovers and a preemptive check notices, which is the only thing
+    // that clears the pressure latch.
+    f.probe.set(2048u * mb);
+    f.clock.advance(10'000'000);
+    ASSERT_FALSE(coordinator.consider(4u * mb, 0u).acted) << "relieving pressure is not itself a rescue";
+    ASSERT_FALSE(coordinator.stats().under_pressure) << "pressure should have been relieved";
+
+    f.probe.set(1u * mb);
+    EXPECT_TRUE(coordinator.consider(4u * mb, 3u).acted) << "a fresh pressure episode must get the failure path back";
+}

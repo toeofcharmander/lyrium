@@ -85,6 +85,24 @@ struct RescueConfig
     // Also evict managed resources once escalation reaches that level.
     bool evict_managed{true};
 
+    // How many times the failure ladder may run to its terminal rung within one
+    // pressure episode before it stops acting. 0 disables the limit.
+    //
+    // A 2 GB session recorded on_failure=182, evictions=122, managed=121,
+    // clears=0 and released=0 across sixty failed creates, with the largest free
+    // block pinned at 106,496 bytes and the shape reading exhausted throughout.
+    // The ladder reached clear_cache_and_managed sixty times and moved nothing.
+    //
+    // That rung is the most destructive action available -- the engine's whole
+    // texture cache plus EvictManagedResources -- and every ~D3DResetable
+    // installs the abstract vtable with _purecall in the reset slot before
+    // unregistering, which is the game's own race. Repeating it into a space that
+    // is not responding is cost with no measured benefit on the other side.
+    //
+    // Per episode rather than per session: relieving pressure re-arms it, so one
+    // bad minute cannot disarm the rest of a save.
+    std::uint32_t failure_ladder_limit{3u};
+
     // Escape hatch. Restores the old unbounded behaviour without a rebuild, for
     // a first release where the failure mode is a crash in a long save.
     bool unbounded{false};
@@ -181,6 +199,10 @@ struct RescueInputs
     // Preemptive rescues already run in the current pressure episode. Reset when
     // pressure is relieved, so a fresh episode starts at the gentlest rung.
     std::uint32_t consecutive_preemptive{};
+
+    // Failure ladders already run to their terminal rung in the current pressure
+    // episode. Reset with the above. Read only by the failure path.
+    std::uint32_t failure_ladders{};
 };
 
 struct RescuePlan
@@ -193,6 +215,10 @@ struct RescuePlan
     bool flush_scratch{};
     bool enters_pressure{};
     bool leaves_pressure{};
+    // The failure path declined to act because its ladder is spent. Distinct
+    // from any other idle: this one is the safety net deliberately standing
+    // down, and the log has to be able to say so.
+    bool abandoned{};
     const char *reason{"idle"};
 
     [[nodiscard]] constexpr auto acts() const -> bool
@@ -377,6 +403,16 @@ class RescuePolicy
         if (!config_.on_failure)
         {
             return idle("failure rescue disabled");
+        }
+
+        // Applied to every rung, not only the terminal one. Leaving the gentler
+        // rungs armed would keep two thirds of the work running for the same
+        // nothing, and each of them still calls into the engine's cache.
+        if (config_.failure_ladder_limit != 0u && inputs.failure_ladders >= config_.failure_ladder_limit)
+        {
+            auto plan = idle("failure ladder spent: eviction is not reclaiming address space");
+            plan.abandoned = true;
+            return plan;
         }
 
         if (inputs.attempt == 1u)

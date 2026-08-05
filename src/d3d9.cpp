@@ -12,7 +12,6 @@
 #include <d3d9.h>
 #include <psapi.h>
 
-#include "lyrium/allocators/heap_interposer.h"
 #include "lyrium/config.h"
 #include "lyrium/containers/unordered_map.h"
 #include "lyrium/dao/engine_hooks.h"
@@ -110,7 +109,10 @@ auto note_create(::HRESULT hr, std::uint64_t bytes) -> void
     if (FAILED(hr))
     {
         lyrium::stats::d3d_create_failures.fetch_add(1u, std::memory_order_relaxed);
-        lyrium::diag::Sampler::instance().sample_now("create_failed");
+        // Asks the sampler thread to walk. Never walks here: this is the render
+        // thread, and doing it inline cost a measured 1.7 seconds across the 240
+        // failures of one cascade.
+        lyrium::diag::Sampler::instance().request_sample();
     }
 }
 
@@ -134,7 +136,6 @@ auto main_pool_override_bytes() -> std::uint32_t
 }
 
 lyrium::dao::PoolPatchResult pool_patch_result{};
-lyrium::HeapInterposerResult heap_arena_result{};
 const char *allocation_watch_mode{"not attempted"};
 
 auto rescue_coordinator() -> lyrium::policy::RescueCoordinator &;
@@ -202,16 +203,11 @@ auto log_ledger_snapshot(std::string_view reason, const lyrium::diag::VaStats &)
         lyrium::diag::report_alloc_records(reason);
     }
 
-    if (heap_arena_result.installed)
-    {
-        lyrium::log_heap_interposer(reason);
-    }
-
     const auto rescue = rescue_coordinator().stats();
     lyrium::log(
         "rescue[{}]: pressure={} preemptive={} on_failure={} evictions={} clears={} managed={} released={} "
-        "suppressed={} scratch={}/{}kb headroom={} laa={} low={} avoided={} shape={}[need={}kb of {}kb in {}kb] "
-        "last={} acted={}",
+        "suppressed={} scratch={}/{}kb ladders={} abandoned={} headroom={} laa={} low={} avoided={} "
+        "shape={}[need={}kb of {}kb in {}kb] last={} acted={}",
         reason,
         rescue.under_pressure,
         rescue.preemptive,
@@ -223,6 +219,8 @@ auto log_ledger_snapshot(std::string_view reason, const lyrium::diag::VaStats &)
         rescue.suppressed,
         rescue.scratch_flushes,
         rescue.scratch_bytes_released / 1024u,
+        rescue.failure_ladders,
+        rescue.abandoned,
         rescue.last_largest_free_bytes,
         process_is_large_address_aware,
         lyrium::diag::Sampler::instance().largest_free_below_2g(),
@@ -1329,21 +1327,6 @@ extern "C"
     const auto d3d9_lib = ::LoadLibraryA(d3d9_path.c_str());
     lyrium::ensure(d3d9_lib != nullptr, "could not load {}", d3d9_path);
     lyrium::breadcrumb("Direct3DCreate9: system d3d9 loaded");
-
-    // Only now can the import be redirected: d3d9.dll has to be in the process
-    // before its import table exists to patch. Reserving here rather than at
-    // attach also means the region is taken while the space is still clean.
-    if (config.heap_arena_mb > 0u)
-    {
-        heap_arena_result = lyrium::install_heap_interposer(
-            static_cast<std::uint64_t>(config.heap_arena_mb) * 1024ull * 1024ull,
-            static_cast<std::size_t>(config.heap_arena_threshold_kb) * 1024u);
-        lyrium::log(
-            "heap arena: {} (reserved={}kb, threshold={}kb)",
-            heap_arena_result.reason,
-            heap_arena_result.reserved_bytes / 1024u,
-            config.heap_arena_threshold_kb);
-    }
 
     const auto direct_create =
         reinterpret_cast<decltype(&Direct3DCreate9)>(::GetProcAddress(d3d9_lib, "Direct3DCreate9"));

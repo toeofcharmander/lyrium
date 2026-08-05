@@ -9,6 +9,7 @@
 #include <thread>
 
 #include "lyrium/dao/engine_hooks.h"
+#include "lyrium/diag/sample_schedule.h"
 #include "lyrium/diag/va_space.h"
 #include "lyrium/log.h"
 #include "lyrium/never_destroyed.h"
@@ -52,15 +53,32 @@ class Sampler
             return;
         }
         running_ = true;
+        schedule_.set_interval_ms(interval_ms);
         lock.unlock();
 
-        // The interval is captured by value rather than read from a member, so
-        // the loop shares no mutable state with anyone.
-        thread_ = std::thread{[this, interval_ms]
+        thread_ = std::thread{[this]
                               {
                                   register_own_thread();
-                                  run(interval_ms);
+                                  run();
                               }};
+    }
+
+    // Ask the sampler thread for a walk. Returns immediately.
+    //
+    // This is what a failed texture create calls. It used to call sample_now()
+    // instead, which walks inline: a 2 GB session logged 240 va[create_failed]
+    // reports at about 7 ms each, roughly 1.7 seconds of walking on the render
+    // thread during the cascade it was describing, on the one path CLAUDE.md
+    // says the walk must never run. Every failure in a burst now collapses into
+    // a single walk on the sampler thread, a few frames later.
+    //
+    // The consequence worth knowing when reading a log: va[create_failed] now
+    // describes the moments just after the failure rather than the instant of
+    // it, and the rescue line beside it is unchanged, since the rescue has
+    // always decided from the sampler's cached figures rather than a fresh walk.
+    auto request_sample() -> void
+    {
+        schedule_.request();
     }
 
     // Called after every sample so the DLL can add its own figures to the same
@@ -175,19 +193,32 @@ class Sampler
     // The trailing sample_now("shutdown") that used to follow this loop was
     // unreachable -- nothing ever called stop() -- which is exactly why no live
     // log has ever contained a shutdown sample. It now happens at detach.
-    auto run(std::int64_t interval_ms) -> void
+    auto run() -> void
     {
         sample_now("startup");
 
         while (true)
         {
-            std::this_thread::sleep_for(std::chrono::milliseconds{interval_ms});
-            sample_now("periodic");
+            std::this_thread::sleep_for(std::chrono::milliseconds{poll_interval_ms});
+
+            switch (schedule_.tick())
+            {
+                case SampleAction::wait: break;
+                case SampleAction::requested: sample_now("create_failed"); break;
+                case SampleAction::periodic: sample_now("periodic"); break;
+            }
         }
     }
 
+    // How often the loop wakes to check for a request. Short relative to the
+    // sample interval, because the delay between a failed create and the walk
+    // that describes it should be a few frames; the cost of a tick that decides
+    // to do nothing is one relaxed exchange.
+    static constexpr auto poll_interval_ms = std::int64_t{100};
+
     std::mutex mutex_;
     std::thread thread_;
+    SampleSchedule schedule_{poll_interval_ms, poll_interval_ms};
     mutable std::mutex snapshot_mutex_{};
     FreeSpaceSnapshot snapshot_{};
 

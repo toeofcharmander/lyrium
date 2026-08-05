@@ -71,6 +71,17 @@ struct RescueStats
     std::uint64_t suppressed{};
     std::uint64_t scratch_flushes{};
     std::uint64_t scratch_bytes_released{};
+
+    // Failure ladders run to their terminal rung in the current pressure
+    // episode, and how many failure-path decisions were declined because that
+    // count had reached its limit.
+    //
+    // Both are logged because the give-up is otherwise invisible: a session that
+    // stops escalating looks exactly like a session that stopped failing, and
+    // the difference is the whole question.
+    std::uint32_t failure_ladders{};
+    std::uint64_t abandoned{};
+
     bool under_pressure{};
 
     // The inputs and verdict of the most recent decision, so a log line can say
@@ -170,6 +181,7 @@ class RescueCoordinator
             .attempt = attempt,
             .under_pressure = under_pressure_,
             .consecutive_preemptive = consecutive_preemptive_,
+            .failure_ladders = failure_ladders_,
         };
 
         const auto plan = policy_.plan(inputs);
@@ -192,8 +204,13 @@ class RescueCoordinator
         {
             under_pressure_ = false;
             consecutive_preemptive_ = 0u;
+            // A fresh episode gets the failure path back. Without this the limit
+            // would be per session, and one bad minute would disarm the safety
+            // net for the rest of a save.
+            failure_ladders_ = 0u;
         }
         stats_.under_pressure = under_pressure_;
+        stats_.failure_ladders = failure_ladders_;
         stats_.last_largest_free_bytes = inputs.largest_free_bytes;
         if (requested_bytes > stats_.largest_request_bytes)
         {
@@ -204,6 +221,11 @@ class RescueCoordinator
         stats_.last_shape =
             diagnose(stats_.largest_request_bytes, stats_.last_shape_largest_bytes, stats_.last_shape_total_bytes);
         stats_.last_reason = plan.reason;
+
+        if (plan.abandoned)
+        {
+            ++stats_.abandoned;
+        }
 
         if (!plan.acts())
         {
@@ -275,6 +297,12 @@ class RescueCoordinator
                 }
                 backend_->evict_managed_resources();
                 ++stats_.managed_evictions;
+                // The terminal rung, so reaching it completes a ladder. Counted
+                // here rather than at the decision because a plan that was never
+                // executed has not cost the engine anything, and mirrored into
+                // stats on the spot because the copy taken before execute() runs
+                // would otherwise report every ladder one call late.
+                stats_.failure_ladders = ++failure_ladders_;
                 break;
         }
 
@@ -293,6 +321,7 @@ class RescueCoordinator
     std::int64_t last_rescue_us_{};
     bool under_pressure_{};
     std::uint32_t consecutive_preemptive_{};
+    std::uint32_t failure_ladders_{};
     RescueStats stats_{};
 };
 

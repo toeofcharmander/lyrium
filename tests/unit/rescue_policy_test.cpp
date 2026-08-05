@@ -377,3 +377,84 @@ TEST(FreeSpaceShape, AnUnknownLargestBlockIsUnknownToo)
 {
     EXPECT_EQ(diagnose(20u * mb, 0u, 101u * mb), FreeSpaceShape::unknown);
 }
+
+// ---------------------------------------------------------------------------
+// Giving up. A live session on a 2 GB install logged on_failure=182 with
+// evictions=122, managed=121, clears=0 and released=0, running the failure
+// ladder to its terminal rung sixty times in a row while the largest free block
+// sat unchanged at 106,496 bytes and the shape read exhausted throughout.
+//
+// The terminal rung is the most destructive thing available to the engine's
+// object graph -- a full cache clear plus EvictManagedResources -- and every
+// ~D3DResetable installs the abstract vtable before unregistering, which is the
+// game's own reset race. Running it sixty times while the address space does not
+// move is harm with nothing on the other side of the ledger.
+// ---------------------------------------------------------------------------
+
+TEST(RescuePolicy, TheFailurePathStopsOnceItsLadderHasRunTheLimit)
+{
+    auto inputs = healthy();
+    inputs.attempt = 3u;
+    inputs.failure_ladders = RescueConfig{}.failure_ladder_limit;
+
+    EXPECT_FALSE(policy().plan(inputs).acts());
+}
+
+TEST(RescuePolicy, TheFailurePathStillActsOnTheLastLadderBeforeTheLimit)
+{
+    auto inputs = healthy();
+    inputs.attempt = 3u;
+    inputs.failure_ladders = RescueConfig{}.failure_ladder_limit - 1u;
+
+    EXPECT_EQ(policy().plan(inputs).action, EvictAction::clear_cache_and_managed);
+}
+
+// Every rung, not just the terminal one. Leaving the gentler rungs armed would
+// keep two thirds of the work running for the same nothing.
+TEST(RescuePolicy, ReachingTheLimitStopsEveryRungOfTheFailurePath)
+{
+    for (std::uint32_t attempt = 1u; attempt <= 6u; ++attempt)
+    {
+        auto inputs = healthy();
+        inputs.attempt = attempt;
+        inputs.failure_ladders = RescueConfig{}.failure_ladder_limit;
+
+        EXPECT_FALSE(policy().plan(inputs).acts()) << "attempt " << attempt << " kept acting past the limit";
+    }
+}
+
+TEST(RescuePolicy, GivingUpSaysSoRatherThanReportingIdle)
+{
+    auto inputs = healthy();
+    inputs.attempt = 3u;
+    inputs.failure_ladders = RescueConfig{}.failure_ladder_limit;
+
+    EXPECT_STRNE(policy().plan(inputs).reason, "idle");
+}
+
+// The escape hatch, matching RescueConfig::unbounded in spirit: a limit of zero
+// restores the behaviour that shipped, without a rebuild.
+TEST(RescuePolicy, ALimitOfZeroNeverGivesUp)
+{
+    auto config = RescueConfig{};
+    config.failure_ladder_limit = 0u;
+
+    auto inputs = healthy();
+    inputs.attempt = 3u;
+    inputs.failure_ladders = 1000u;
+
+    EXPECT_EQ(RescuePolicy{config}.plan(inputs).action, EvictAction::clear_cache_and_managed);
+}
+
+// The limit belongs to the failure path alone. The preemptive ladder is bounded
+// by consecutive_preemptive and must not be disarmed by a count it does not own.
+TEST(RescuePolicy, ASpentFailureLadderDoesNotDisarmThePreemptivePath)
+{
+    auto inputs = healthy();
+    inputs.attempt = 0u;
+    inputs.largest_free_bytes = 8u * mb;
+    inputs.requested_bytes = 8u * mb;
+    inputs.failure_ladders = RescueConfig{}.failure_ladder_limit;
+
+    EXPECT_TRUE(policy().plan(inputs).acts());
+}
