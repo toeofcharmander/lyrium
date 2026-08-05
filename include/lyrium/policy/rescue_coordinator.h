@@ -33,10 +33,19 @@ class FreeSpaceProbe
   public:
     virtual ~FreeSpaceProbe() = default;
 
-    // Total free bytes in the space the request must come from, or 0 when not
-    // known. Paired with largest_free_bytes it separates fragmentation from
-    // exhaustion; see FreeSpaceShape. Must be as cheap as the largest-block read.
-    [[nodiscard]] virtual auto total_free_bytes() const -> std::uint64_t = 0;
+    // The constrained space specifically -- largest block and total -- or 0 when
+    // not known. Where there is room above the 2 GB line these describe the low
+    // half; where there is not they are the same figures as largest_free_bytes.
+    //
+    // Deliberately separate from largest_free_bytes, which answers "will this
+    // allocation be served" and on a large-address-aware process therefore
+    // includes 2 GB of untouched reserve. Diagnosing fragmentation against that
+    // reports sufficient forever: a live session read sufficient on all 28
+    // samples while the low half sat at 15.8 MB largest against 81.1 MB total.
+    // The rescue decision wants the space that will be used; the diagnosis wants
+    // the space that is degrading. Not the same question.
+    [[nodiscard]] virtual auto constrained_largest_free_bytes() const -> std::uint64_t = 0;
+    [[nodiscard]] virtual auto constrained_total_free_bytes() const -> std::uint64_t = 0;
 
     // Largest contiguous free block, or 0 when not yet known. Must be cheap:
     // a full address-space walk was measured at about 6.5 ms, which is 39
@@ -140,7 +149,7 @@ class RescueCoordinator
 
         const auto inputs = RescueInputs{
             .largest_free_bytes = probe_->largest_free_bytes(),
-            .total_free_bytes = probe_->total_free_bytes(),
+            .total_free_bytes = probe_->constrained_total_free_bytes(),
             .requested_bytes = requested_bytes,
             .now_us = clock_->now_us(),
             .last_rescue_us = last_rescue_us_,
@@ -178,7 +187,8 @@ class RescueCoordinator
         {
             stats_.largest_request_bytes = requested_bytes;
         }
-        stats_.last_shape = diagnose(stats_.largest_request_bytes, inputs.largest_free_bytes, inputs.total_free_bytes);
+        stats_.last_shape =
+            diagnose(stats_.largest_request_bytes, probe_->constrained_largest_free_bytes(), inputs.total_free_bytes);
         stats_.last_reason = plan.reason;
 
         if (!plan.acts())

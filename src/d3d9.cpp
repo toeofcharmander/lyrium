@@ -341,12 +341,18 @@ class SamplerFreeSpaceProbe final : public lyrium::policy::FreeSpaceProbe
         return headroom;
     }
 
-    // The same space the headroom figure describes, so the two are comparable:
-    // whole process under LAA, below the line otherwise.
-    [[nodiscard]] auto total_free_bytes() const -> std::uint64_t override
+    // Always the low half, on both install types. This is the space that
+    // degrades: on a large-address-aware process the region above the 2 GB line
+    // is untouched reserve, so including it would report a healthy space no
+    // matter how finely the low half were cut up.
+    [[nodiscard]] auto constrained_largest_free_bytes() const -> std::uint64_t override
     {
-        const auto &sampler = lyrium::diag::Sampler::instance();
-        return process_is_large_address_aware ? sampler.total_free() : sampler.total_free_below_2g();
+        return lyrium::diag::Sampler::instance().largest_free_below_2g();
+    }
+
+    [[nodiscard]] auto constrained_total_free_bytes() const -> std::uint64_t override
+    {
+        return lyrium::diag::Sampler::instance().total_free_below_2g();
     }
 };
 

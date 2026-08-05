@@ -44,10 +44,17 @@ class FakeProbe final : public FreeSpaceProbe
     }
 
     // Defaults to a total far above the largest block, so tests that only set
-    // the largest block read as fragmented rather than exhausted.
-    [[nodiscard]] auto total_free_bytes() const -> std::uint64_t override
+    // the largest block read as fragmented rather than exhausted. The fake makes
+    // no distinction between the whole space and the constrained one; the tests
+    // that care set both explicitly.
+    [[nodiscard]] auto constrained_total_free_bytes() const -> std::uint64_t override
     {
         return total_;
+    }
+
+    [[nodiscard]] auto constrained_largest_free_bytes() const -> std::uint64_t override
+    {
+        return largest_;
     }
 
     auto set(std::uint64_t bytes) -> void
