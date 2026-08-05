@@ -25,8 +25,7 @@ struct PoolPatchResult
 
 inline auto patch_main_pool(std::uint32_t new_size_bytes) -> PoolPatchResult
 {
-    auto result = PoolPatchResult{
-        .applied = false, .original_bytes = 0, .patched_bytes = 0, .reason = "not attempted"};
+    auto result = PoolPatchResult{.applied = false, .original_bytes = 0, .patched_bytes = 0, .reason = "not attempted"};
 
     if (new_size_bytes == 0u)
     {

@@ -65,8 +65,6 @@ auto com_hook = lyrium::COMHook{};
 
 auto config = lyrium::Config{};
 
-
-
 // Built once from the loaded configuration. This is a stepping stone: the policy
 // is owned by a composition root in a later step, not reached through a global.
 auto placement_policy() -> const lyrium::policy::TexturePlacementPolicy &
@@ -81,8 +79,7 @@ auto placement_policy() -> const lyrium::policy::TexturePlacementPolicy &
 
 auto remember_texture(void *texture, std::uint64_t bytes, ::D3DPOOL pool, bool relocated) -> void
 {
-    lyrium::texture_ledger().note_created(
-        texture, static_cast<lyrium::texture::TexturePool>(pool), bytes, relocated);
+    lyrium::texture_ledger().note_created(texture, static_cast<lyrium::texture::TexturePool>(pool), bytes, relocated);
 }
 
 auto forget_texture(void *texture) -> void
@@ -97,17 +94,12 @@ auto forget_resettable_texture(::IDirect3DTexture9 *texture) -> void
 
 auto note_create(::HRESULT hr, std::uint64_t bytes) -> void
 {
-    const auto count =
-        lyrium::stats::d3d_creates.fetch_add(1u, std::memory_order_relaxed) + 1u;
+    const auto count = lyrium::stats::d3d_creates.fetch_add(1u, std::memory_order_relaxed) + 1u;
     lyrium::dao::note_d3d_create_result(static_cast<std::int32_t>(hr), bytes);
 
     if (count <= 8u || count % 256u == 0u || FAILED(hr))
     {
-        lyrium::log(
-            "d3d create #{}: hr={:#010x}, bytes={}",
-            count,
-            static_cast<std::uint32_t>(hr),
-            bytes);
+        lyrium::log("d3d create #{}: hr={:#010x}, bytes={}", count, static_cast<std::uint32_t>(hr), bytes);
     }
 
     if (FAILED(hr))
@@ -155,7 +147,6 @@ auto log_ledger_snapshot(std::string_view reason, const lyrium::diag::VaStats &)
         lyrium::log("textures[{}]: unavailable, ledger busy", reason);
         return;
     }
-
 
     lyrium::log(
         "textures[{}]: live={} bytes={} peak={} released={} default={} managed={} systemmem={} scratch={} "
@@ -215,8 +206,6 @@ auto enable_allocation_watch() -> void
         allocation_watch_mode = "unavailable";
     }
 }
-
-
 
 // Windows adapters for the rescue seams. They hold no decisions: every choice
 // about whether and how hard to evict belongs to RescuePolicy, which is tested
@@ -393,16 +382,10 @@ __declspec(dllexport) ::HRESULT WINAPI IDirect3DDevice9_CreateTexture_hook(
     ::D3DPOOL Pool,
     ::IDirect3DTexture9 **ppTexture,
     ::HANDLE *pSharedHandle);
-__declspec(dllexport) ::HRESULT WINAPI IDirect3DDevice9_GetTexture_hook(
-    ::PROC orig_func,
-    void *that,
-    ::DWORD Stage,
-    ::IDirect3DBaseTexture9 **ppTexture);
-__declspec(dllexport) ::HRESULT WINAPI IDirect3DDevice9_SetTexture_hook(
-    ::PROC orig_func,
-    void *that,
-    ::DWORD Stage,
-    ::IDirect3DBaseTexture9 *pTexture);
+__declspec(dllexport) ::HRESULT WINAPI
+IDirect3DDevice9_GetTexture_hook(::PROC orig_func, void *that, ::DWORD Stage, ::IDirect3DBaseTexture9 **ppTexture);
+__declspec(dllexport) ::HRESULT WINAPI
+IDirect3DDevice9_SetTexture_hook(::PROC orig_func, void *that, ::DWORD Stage, ::IDirect3DBaseTexture9 *pTexture);
 __declspec(dllexport) ::HRESULT WINAPI IDirect3DDevice9_UpdateTexture_hook(
     ::PROC orig_func,
     void *that,
@@ -441,10 +424,8 @@ __declspec(dllexport) ::HRESULT WINAPI IDirect3DDevice9_CreateRenderTarget_hook(
     ::BOOL Lockable,
     ::IDirect3DSurface9 **ppSurface,
     ::HANDLE *pSharedHandle);
-__declspec(dllexport) ::HRESULT WINAPI IDirect3DDevice9_Reset_hook(
-    ::PROC orig_func,
-    void *that,
-    ::D3DPRESENT_PARAMETERS *pPresentationParameters);
+__declspec(dllexport) ::HRESULT WINAPI
+IDirect3DDevice9_Reset_hook(::PROC orig_func, void *that, ::D3DPRESENT_PARAMETERS *pPresentationParameters);
 __declspec(dllexport) ::HRESULT WINAPI IDirect3DDevice9_EvictManagedResources_hook(::PROC orig_func, void *that);
 __declspec(dllexport) ::HRESULT WINAPI IDirect3DStateBlock9_Release_hook(::PROC orig_func, void *that);
 __declspec(dllexport) ::HRESULT WINAPI IDirect3DDevice9_CreateStateBlock_hook(
@@ -751,11 +732,8 @@ __declspec(dllexport) ::HRESULT WINAPI IDirect3DDevice9_CreateTexture_hook(
     return res;
 }
 
-__declspec(dllexport) ::HRESULT WINAPI IDirect3DDevice9_GetTexture_hook(
-    ::PROC orig_func,
-    void *that,
-    ::DWORD Stage,
-    ::IDirect3DBaseTexture9 **ppTexture)
+__declspec(dllexport) ::HRESULT WINAPI
+IDirect3DDevice9_GetTexture_hook(::PROC orig_func, void *that, ::DWORD Stage, ::IDirect3DBaseTexture9 **ppTexture)
 {
     using orig_call_type = OrigFuncType<decltype(&IDirect3DDevice9_GetTexture_hook)>;
 
@@ -767,11 +745,8 @@ __declspec(dllexport) ::HRESULT WINAPI IDirect3DDevice9_GetTexture_hook(
     return result;
 }
 
-__declspec(dllexport) ::HRESULT WINAPI IDirect3DDevice9_SetTexture_hook(
-    ::PROC orig_func,
-    void *that,
-    ::DWORD Stage,
-    ::IDirect3DBaseTexture9 *pTexture)
+__declspec(dllexport) ::HRESULT WINAPI
+IDirect3DDevice9_SetTexture_hook(::PROC orig_func, void *that, ::DWORD Stage, ::IDirect3DBaseTexture9 *pTexture)
 {
     using orig_call_type = OrigFuncType<decltype(&IDirect3DDevice9_SetTexture_hook)>;
 
@@ -802,7 +777,8 @@ __declspec(dllexport) ::HRESULT WINAPI IDirect3DDevice9_UpdateTexture_hook(
     auto *source = lyrium::acquire_bound_texture(pSourceTexture);
     auto *destination = lyrium::acquire_bound_texture(pDestinationTexture);
 
-    const auto release = [](::IDirect3DBaseTexture9 *texture) {
+    const auto release = [](::IDirect3DBaseTexture9 *texture)
+    {
         if (texture != nullptr)
         {
             texture->Release();
@@ -814,8 +790,7 @@ __declspec(dllexport) ::HRESULT WINAPI IDirect3DDevice9_UpdateTexture_hook(
     // both cases the update has nowhere useful to go, and the shadow copy will
     // be re-uploaded on the next restore. Reporting a device loss the game never
     // caused is worse than skipping a copy it will not miss.
-    if ((pSourceTexture != nullptr && source == nullptr) ||
-        (pDestinationTexture != nullptr && destination == nullptr))
+    if ((pSourceTexture != nullptr && source == nullptr) || (pDestinationTexture != nullptr && destination == nullptr))
     {
         release(source);
         release(destination);
@@ -896,16 +871,14 @@ __declspec(dllexport) ::HRESULT WINAPI IDirect3DDevice9_CreateRenderTarget_hook(
 {
     using orig_call_type = OrigFuncType<decltype(&IDirect3DDevice9_CreateRenderTarget_hook)>;
 
-    const auto res = reinterpret_cast<orig_call_type>(orig_func)(
-        that, Width, Height, Format, MultiSample, MultisampleQuality, Lockable, ppSurface, pSharedHandle);
+    const auto res = reinterpret_cast<orig_call_type>(
+        orig_func)(that, Width, Height, Format, MultiSample, MultisampleQuality, Lockable, ppSurface, pSharedHandle);
     note_create(res, lyrium::diag::texture_bytes(Width, Height, 1u, 1u, Format));
     return res;
 }
 
-__declspec(dllexport) ::HRESULT WINAPI IDirect3DDevice9_Reset_hook(
-    ::PROC orig_func,
-    void *that,
-    ::D3DPRESENT_PARAMETERS *pPresentationParameters)
+__declspec(dllexport) ::HRESULT WINAPI
+IDirect3DDevice9_Reset_hook(::PROC orig_func, void *that, ::D3DPRESENT_PARAMETERS *pPresentationParameters)
 {
     using orig_call_type = OrigFuncType<decltype(&IDirect3DDevice9_Reset_hook)>;
 
@@ -1034,7 +1007,6 @@ __declspec(dllexport) ::HRESULT WINAPI IDirect3D9_CreateDevice_hook(
     auto caps = ::D3DCAPS9{};
     device->GetDeviceCaps(&caps);
 
-
     // The backend needs the device to evict managed resources.
     rescue_parts().backend.set_device(device);
 
@@ -1071,8 +1043,7 @@ extern "C"
         {
             lyrium::log_start(
                 config.log_directory,
-                "lyrium_" + lyrium::wall_clock("%Y%m%d_%H%M%S") + "_" +
-                    std::to_string(::GetCurrentProcessId()));
+                "lyrium_" + lyrium::wall_clock("%Y%m%d_%H%M%S") + "_" + std::to_string(::GetCurrentProcessId()));
             lyrium::breadcrumb_reset(config.log_directory);
             lyrium::breadcrumb("Direct3DCreate9: logging started");
             lyrium::log("lyrium diagnostic startup, pid={}", ::GetCurrentProcessId());
@@ -1146,9 +1117,8 @@ extern "C"
         }
 
         lyrium::diag::Sampler::instance().set_observer(&log_ledger_snapshot);
-    lyrium::diag::Sampler::instance().start(config.sample_interval_ms);
+        lyrium::diag::Sampler::instance().start(config.sample_interval_ms);
         lyrium::breadcrumb("Direct3DCreate9: sampler started");
-
     }
 
     lyrium::breadcrumb("Direct3DCreate9: loading system d3d9");

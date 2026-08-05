@@ -68,10 +68,9 @@ class RescueCoordinator
         : policy_{config}
         , backend_{&backend}
         , probe_{&probe}
-        , clock_{&clock}
-        // Seeded far enough back that the first rescue is never swallowed by the
-        // rate limit. The policy has no way to distinguish "never rescued" from
-        // "rescued just now", so the caller must establish it.
+        , clock_{&clock} // Seeded far enough back that the first rescue is never swallowed by the
+                         // rate limit. The policy has no way to distinguish "never rescued" from
+                         // "rescued just now", so the caller must establish it.
         , last_rescue_us_{clock.now_us() - config.min_interval_us - 1}
     {
     }

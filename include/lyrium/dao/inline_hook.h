@@ -69,8 +69,7 @@ class ThreadFreezer
                     continue;
                 }
                 frozen_.push_back(thread);
-            }
-            while (::Thread32Next(snapshot, &entry) != FALSE);
+            } while (::Thread32Next(snapshot, &entry) != FALSE);
         }
 
         ::CloseHandle(snapshot);
@@ -349,8 +348,8 @@ class InlineHook
         }
 
         const auto *start = static_cast<const std::uint8_t *>(info.BaseAddress);
-        const auto available = info.RegionSize - static_cast<std::size_t>(
-                                                     static_cast<const std::uint8_t *>(address) - start);
+        const auto available =
+            info.RegionSize - static_cast<std::size_t>(static_cast<const std::uint8_t *>(address) - start);
         return available >= size;
     }
 

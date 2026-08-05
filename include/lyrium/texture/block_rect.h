@@ -80,8 +80,7 @@ struct BlockRect
         return BlockRect{.rect = rect, .kind = BlockRectKind::empty};
     }
 
-    const auto covers =
-        rect.left == 0 && rect.top == 0 && rect.right >= level_width && rect.bottom >= level_height;
+    const auto covers = rect.left == 0 && rect.top == 0 && rect.right >= level_width && rect.bottom >= level_height;
 
     return BlockRect{.rect = rect, .kind = covers ? BlockRectKind::covers_level : BlockRectKind::partial};
 }

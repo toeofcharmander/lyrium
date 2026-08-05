@@ -19,8 +19,8 @@
 #include <utility>
 #include <vector>
 
-#include <windows.h>
 #include "lyrium/never_destroyed.h"
+#include <windows.h>
 
 namespace lyrium
 {
@@ -75,12 +75,11 @@ class LogSink
         running_ = true;
 
         lock.unlock();
-        writer_ = std::thread{
-            [this]
-            {
-                register_own_thread();
-                run();
-            }};
+        writer_ = std::thread{[this]
+                              {
+                                  register_own_thread();
+                                  run();
+                              }};
     }
 
     auto push_event(std::string &&line) -> void
@@ -205,7 +204,8 @@ class LogSink
         {
             {
                 auto lock = std::unique_lock{mutex_};
-                signal_.wait_for(lock, std::chrono::milliseconds{250}, [this] { return !pending_.empty() || !running_; });
+                signal_.wait_for(
+                    lock, std::chrono::milliseconds{250}, [this] { return !pending_.empty() || !running_; });
                 keep_going = running_ || !pending_.empty();
                 drain_locked();
             }

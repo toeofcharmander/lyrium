@@ -65,8 +65,8 @@ inline auto collect_frames(std::uint32_t *out, std::uint32_t limit) -> std::uint
     }
 
     auto *cursor = reinterpret_cast<const std::uint32_t *>(__builtin_frame_address(0));
-    const auto *stack_top = reinterpret_cast<const std::uint32_t *>(
-        reinterpret_cast<const ::NT_TIB *>(::NtCurrentTeb())->StackBase);
+    const auto *stack_top =
+        reinterpret_cast<const std::uint32_t *>(reinterpret_cast<const ::NT_TIB *>(::NtCurrentTeb())->StackBase);
 
     const auto looks_like_return_address = [low, high](std::uint32_t value)
     {
@@ -155,11 +155,8 @@ using VirtualAllocFn = ::LPVOID(WINAPI *)(::LPVOID, ::SIZE_T, ::DWORD, ::DWORD);
 inline std::atomic<VirtualAllocFn> virtual_alloc_original{nullptr};
 inline std::atomic<void **> virtual_alloc_slot{nullptr};
 
-inline auto WINAPI virtual_alloc_detour(
-    ::LPVOID address,
-    ::SIZE_T size,
-    ::DWORD allocation_type,
-    ::DWORD protect) -> ::LPVOID
+inline auto WINAPI virtual_alloc_detour(::LPVOID address, ::SIZE_T size, ::DWORD allocation_type, ::DWORD protect)
+    -> ::LPVOID
 {
     const auto original = virtual_alloc_original.load(std::memory_order_relaxed);
     if (original == nullptr)
@@ -185,8 +182,7 @@ inline auto WINAPI virtual_alloc_detour(
                 .frames = {},
                 .frame_count = 0,
             };
-            alloc_records[index].frame_count =
-                collect_frames(alloc_records[index].frames, max_frames);
+            alloc_records[index].frame_count = collect_frames(alloc_records[index].frames, max_frames);
         }
         else
         {
@@ -203,8 +199,7 @@ inline auto WINAPI virtual_alloc_detour(
 namespace detail
 {
 
-using NtAllocateFn = ::LONG(__attribute__((stdcall)) *)(
-    ::HANDLE, void **, ::ULONG_PTR, ::SIZE_T *, ::ULONG, ::ULONG);
+using NtAllocateFn = ::LONG(__attribute__((stdcall)) *)(::HANDLE, void **, ::ULONG_PTR, ::SIZE_T *, ::ULONG, ::ULONG);
 inline std::atomic<NtAllocateFn> nt_allocate_original{nullptr};
 inline std::atomic<std::uint64_t> nt_hooked_target{0};
 
@@ -232,9 +227,7 @@ inline auto __attribute__((stdcall)) nt_allocate_detour(
         {
             alloc_records[index] = AllocRecord{
                 .size = size,
-                .result = (base_address != nullptr)
-                              ? reinterpret_cast<std::uintptr_t>(*base_address)
-                              : 0u,
+                .result = (base_address != nullptr) ? reinterpret_cast<std::uintptr_t>(*base_address) : 0u,
                 .caller = reinterpret_cast<std::uintptr_t>(__builtin_return_address(0)),
                 .type = allocation_type,
                 .protect = protect,
@@ -242,8 +235,7 @@ inline auto __attribute__((stdcall)) nt_allocate_detour(
                 .frames = {},
                 .frame_count = 0,
             };
-            alloc_records[index].frame_count =
-                collect_frames(alloc_records[index].frames, max_frames);
+            alloc_records[index].frame_count = collect_frames(alloc_records[index].frames, max_frames);
         }
         else
         {
@@ -263,8 +255,7 @@ inline auto recognised_prologue(const std::uint8_t *bytes) -> bool
 {
     static constexpr std::uint8_t hotpatch[] = {0x8B, 0xFF, 0x55, 0x8B, 0xEC};
     static constexpr std::uint8_t classic[] = {0x55, 0x8B, 0xEC, 0x8B, 0x45};
-    return std::memcmp(bytes, hotpatch, sizeof(hotpatch)) == 0 ||
-           std::memcmp(bytes, classic, sizeof(classic)) == 0;
+    return std::memcmp(bytes, hotpatch, sizeof(hotpatch)) == 0 || std::memcmp(bytes, classic, sizeof(classic)) == 0;
 }
 
 }
@@ -335,8 +326,8 @@ inline auto install_virtual_alloc_hook(std::uint64_t threshold_bytes) -> bool
     }
     detail::prologue_recognised.store(true, std::memory_order_relaxed);
 
-    auto *trampoline = static_cast<std::uint8_t *>(
-        ::VirtualAlloc(nullptr, 64u, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE));
+    auto *trampoline =
+        static_cast<std::uint8_t *>(::VirtualAlloc(nullptr, 64u, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE));
     if (trampoline == nullptr)
     {
         return false;
@@ -404,8 +395,7 @@ inline auto __attribute__((cdecl)) malloc_detour(std::size_t size) -> void *
                 .frames = {},
                 .frame_count = 0,
             };
-            alloc_records[index].frame_count =
-                collect_frames(alloc_records[index].frames, max_frames);
+            alloc_records[index].frame_count = collect_frames(alloc_records[index].frames, max_frames);
         }
         else
         {
@@ -437,8 +427,8 @@ inline auto install_game_malloc_hook(std::uint64_t threshold_bytes) -> bool
 
     auto info = ::MEMORY_BASIC_INFORMATION{};
     if (::VirtualQuery(target, &info, sizeof(info)) == 0 || info.State != MEM_COMMIT ||
-        (info.Protect & (PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE |
-                         PAGE_EXECUTE_WRITECOPY | PAGE_READONLY | PAGE_READWRITE)) == 0 ||
+        (info.Protect & (PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY |
+                         PAGE_READONLY | PAGE_READWRITE)) == 0 ||
         (info.Protect & PAGE_GUARD) != 0)
     {
         return false;
@@ -455,8 +445,8 @@ inline auto install_game_malloc_hook(std::uint64_t threshold_bytes) -> bool
         return false;
     }
 
-    auto *trampoline = static_cast<std::uint8_t *>(
-        ::VirtualAlloc(nullptr, 64u, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE));
+    auto *trampoline =
+        static_cast<std::uint8_t *>(::VirtualAlloc(nullptr, 64u, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE));
     if (trampoline == nullptr)
     {
         return false;
@@ -474,8 +464,8 @@ inline auto install_game_malloc_hook(std::uint64_t threshold_bytes) -> bool
         return false;
     }
 
-    const auto jump = static_cast<std::int32_t>(
-        reinterpret_cast<std::uint8_t *>(&detail::malloc_detour) - (target + patch_len));
+    const auto jump =
+        static_cast<std::int32_t>(reinterpret_cast<std::uint8_t *>(&detail::malloc_detour) - (target + patch_len));
     target[0] = 0xE9;
     std::memcpy(target + 1, &jump, sizeof(jump));
 
@@ -510,8 +500,8 @@ inline auto install_nt_alloc_hook(std::uint64_t threshold_bytes) -> bool
     }
     detail::prologue_recognised.store(true, std::memory_order_relaxed);
 
-    auto *trampoline = static_cast<std::uint8_t *>(
-        ::VirtualAlloc(nullptr, 64u, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE));
+    auto *trampoline =
+        static_cast<std::uint8_t *>(::VirtualAlloc(nullptr, 64u, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE));
     if (trampoline == nullptr)
     {
         return false;
@@ -523,8 +513,7 @@ inline auto install_nt_alloc_hook(std::uint64_t threshold_bytes) -> bool
     trampoline[patch_len] = 0xE9;
     std::memcpy(trampoline + patch_len + 1, &back, sizeof(back));
 
-    detail::nt_allocate_original.store(
-        reinterpret_cast<detail::NtAllocateFn>(trampoline), std::memory_order_relaxed);
+    detail::nt_allocate_original.store(reinterpret_cast<detail::NtAllocateFn>(trampoline), std::memory_order_relaxed);
 
     auto protection = ::DWORD{};
     if (::VirtualProtect(target, patch_len, PAGE_EXECUTE_READWRITE, &protection) == 0)
@@ -532,8 +521,8 @@ inline auto install_nt_alloc_hook(std::uint64_t threshold_bytes) -> bool
         return false;
     }
 
-    const auto jump = static_cast<std::int32_t>(
-        reinterpret_cast<std::uint8_t *>(&detail::nt_allocate_detour) - (target + patch_len));
+    const auto jump =
+        static_cast<std::int32_t>(reinterpret_cast<std::uint8_t *>(&detail::nt_allocate_detour) - (target + patch_len));
     target[0] = 0xE9;
     std::memcpy(target + 1, &jump, sizeof(jump));
 
@@ -588,8 +577,7 @@ inline auto install_alloc_watch(std::uint64_t threshold_bytes) -> bool
                 continue;
             }
 
-            const auto *by_name =
-                reinterpret_cast<const ::IMAGE_IMPORT_BY_NAME *>(base + names->u1.AddressOfData);
+            const auto *by_name = reinterpret_cast<const ::IMAGE_IMPORT_BY_NAME *>(base + names->u1.AddressOfData);
             if (std::strcmp(reinterpret_cast<const char *>(by_name->Name), "VirtualAlloc") != 0)
             {
                 continue;

@@ -96,8 +96,7 @@ inline auto safe_read_string(const void *address, std::size_t limit = 260u) -> s
             break;
         }
 
-        const auto *region_end =
-            static_cast<const char *>(info.BaseAddress) + info.RegionSize;
+        const auto *region_end = static_cast<const char *>(info.BaseAddress) + info.RegionSize;
         while (cursor < region_end && out.size() < limit)
         {
             const auto c = *cursor++;

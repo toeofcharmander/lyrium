@@ -7,16 +7,8 @@
 namespace lyrium
 {
 
-using CreateTextureFn = ::HRESULT(WINAPI *)(
-    void *,
-    ::UINT,
-    ::UINT,
-    ::UINT,
-    ::DWORD,
-    ::D3DFORMAT,
-    ::D3DPOOL,
-    ::IDirect3DTexture9 **,
-    ::HANDLE *);
+using CreateTextureFn = ::HRESULT(
+    WINAPI *)(void *, ::UINT, ::UINT, ::UINT, ::DWORD, ::D3DFORMAT, ::D3DPOOL, ::IDirect3DTexture9 **, ::HANDLE *);
 
 using TextureDestroyedFn = void (*)(::IDirect3DTexture9 *);
 

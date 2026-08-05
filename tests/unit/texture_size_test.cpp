@@ -94,9 +94,7 @@ TEST(TextureSize, ClampingOfZeroExtentsIsAsymmetricButUnreachable)
 TEST(TextureSize, ExplicitLevelCountSumsOnlyThoseLevels)
 {
     EXPECT_EQ(texture_bytes(256u, 256u, 1u, 1u, D3DFMT_A8R8G8B8), 256u * 256u * 4u);
-    EXPECT_EQ(
-        texture_bytes(256u, 256u, 1u, 2u, D3DFMT_A8R8G8B8),
-        (256u * 256u * 4u) + (128u * 128u * 4u));
+    EXPECT_EQ(texture_bytes(256u, 256u, 1u, 2u, D3DFMT_A8R8G8B8), (256u * 256u * 4u) + (128u * 128u * 4u));
 }
 
 TEST(TextureSize, ZeroLevelsDerivesTheWholeMipChain)

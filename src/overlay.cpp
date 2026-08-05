@@ -443,8 +443,7 @@ auto visible() -> bool
 auto poll_hotkey() -> void
 {
     static auto previously_held = false;
-    const auto held = (::GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0 &&
-                      (::GetAsyncKeyState(VK_F12) & 0x8000) != 0;
+    const auto held = (::GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0 && (::GetAsyncKeyState(VK_F12) & 0x8000) != 0;
     if (held && !previously_held)
     {
         set_visible(!visible());

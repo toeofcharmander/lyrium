@@ -75,7 +75,6 @@ class COMHook
                     .hook_func = reinterpret_cast<::PROC>(hook),
                 });
         }
-
     }
 
   private:

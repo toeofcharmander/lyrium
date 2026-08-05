@@ -115,8 +115,7 @@ TEST(ConfigParse, GarbageNumbersSilentlyBecomeZero)
     // the default -- it sets a zero budget. Pinned so the behaviour is known.
     const auto config = configured("recycler_budget_mb=abc\n");
 
-    EXPECT_EQ(config.recycler.budget_bytes, 0u)
-        << "a malformed number yields zero, not the 96 MB default";
+    EXPECT_EQ(config.recycler.budget_bytes, 0u) << "a malformed number yields zero, not the 96 MB default";
     EXPECT_NE(config.recycler.budget_bytes, Config{}.recycler.budget_bytes);
 }
 

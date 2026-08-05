@@ -32,8 +32,8 @@ auto is_hex_lower(char c) -> bool
 // ever be a screen -- it is not a substitute for a length decoder.
 auto looks_like_relative_branch(std::uint8_t byte) -> bool
 {
-    return byte == 0xE8u || byte == 0xE9u || byte == 0xEBu || byte == 0xE3u ||
-           (byte >= 0xE0u && byte <= 0xE2u) || (byte >= 0x70u && byte <= 0x7Fu);
+    return byte == 0xE8u || byte == 0xE9u || byte == 0xEBu || byte == 0xE3u || (byte >= 0xE0u && byte <= 0xE2u) ||
+           (byte >= 0x70u && byte <= 0x7Fu);
 }
 
 }
@@ -91,9 +91,8 @@ TEST(TargetsTable, RelocationMaskOnlyDescribesBytesInsideThePatch)
     {
         const auto outside = static_cast<std::uint32_t>(entry.reloc_mask) >> entry.patch_len;
         EXPECT_EQ(outside, 0u) << entry.name << " has reloc_mask 0x" << std::hex << entry.reloc_mask << std::dec
-                               << " with patch_len " << entry.patch_len
-                               << ", so the bits above bit " << (entry.patch_len - 1u)
-                               << " are never consulted by verify()";
+                               << " with patch_len " << entry.patch_len << ", so the bits above bit "
+                               << (entry.patch_len - 1u) << " are never consulted by verify()";
     }
 }
 
@@ -125,8 +124,8 @@ TEST(TargetsTable, NoRelativeBranchStartsInsideThePatchedRange)
         {
             EXPECT_FALSE(looks_like_relative_branch(entry.prologue[i]))
                 << entry.name << " has a byte that looks like a relative branch (0x" << std::hex
-                << static_cast<unsigned>(entry.prologue[i]) << std::dec << ") at offset " << i
-                << ", inside the " << entry.patch_len << " bytes that get replaced";
+                << static_cast<unsigned>(entry.prologue[i]) << std::dec << ") at offset " << i << ", inside the "
+                << entry.patch_len << " bytes that get replaced";
         }
     }
 }

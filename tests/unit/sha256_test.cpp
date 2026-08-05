@@ -67,7 +67,8 @@ TEST(Sha256Test, StreamingInChunksMatchesASingleUpdate)
     // block boundary are where an off-by-one in the buffering would show.
     const std::string input(200u, 'x');
 
-    for (const std::size_t chunk : {std::size_t{1}, std::size_t{63}, std::size_t{64}, std::size_t{65}, std::size_t{128}})
+    for (const std::size_t chunk :
+         {std::size_t{1}, std::size_t{63}, std::size_t{64}, std::size_t{65}, std::size_t{128}})
     {
         Sha256 hasher{};
         for (std::size_t offset = 0u; offset < input.size(); offset += chunk)

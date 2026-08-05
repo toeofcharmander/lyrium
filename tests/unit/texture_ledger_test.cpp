@@ -166,14 +166,16 @@ TEST(TextureLedger, ConcurrentTrafficKeepsTheBooksBalanced)
 
     for (int t = 0; t < threads; ++t)
     {
-        workers.emplace_back([&ledger, t] {
-            for (int i = 0; i < per_thread; ++i)
+        workers.emplace_back(
+            [&ledger, t]
             {
-                const auto h = handle(static_cast<std::uintptr_t>(t * per_thread + i + 1));
-                ledger.note_created(h, TexturePool::D3DPOOL_DEFAULT, 64u);
-                ledger.note_destroyed(h);
-            }
-        });
+                for (int i = 0; i < per_thread; ++i)
+                {
+                    const auto h = handle(static_cast<std::uintptr_t>(t * per_thread + i + 1));
+                    ledger.note_created(h, TexturePool::D3DPOOL_DEFAULT, 64u);
+                    ledger.note_destroyed(h);
+                }
+            });
     }
     for (auto &worker : workers)
     {
@@ -257,14 +259,15 @@ TEST(TextureLedger, TryTotalsFailsRatherThanBlockingWhenContended)
     // the ledger invokes under it. There is no such hook, so instead contend by
     // hammering note_created while the main thread tries: with enough traffic the
     // try must fail at least once, and must never block.
-    std::thread hammer{[&] {
-        holding.store(true);
-        while (!release.load())
-        {
-            ledger.note_created(handle(2), TexturePool::D3DPOOL_DEFAULT, 64u);
-            ledger.note_destroyed(handle(2));
-        }
-    }};
+    std::thread hammer{[&]
+                       {
+                           holding.store(true);
+                           while (!release.load())
+                           {
+                               ledger.note_created(handle(2), TexturePool::D3DPOOL_DEFAULT, 64u);
+                               ledger.note_destroyed(handle(2));
+                           }
+                       }};
 
     while (!holding.load())
     {

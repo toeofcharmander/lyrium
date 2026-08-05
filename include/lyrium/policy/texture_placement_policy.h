@@ -63,9 +63,8 @@ class TexturePlacementPolicy
     // it already computed, and so this stays independent of the format tables.
     [[nodiscard]] constexpr auto place(const texture::TextureDesc &desc, std::uint64_t bytes) const -> Placement
     {
-        const auto keep = [&desc](const char *reason) {
-            return Placement{.pool = desc.pool, .decision = PlacementDecision::keep_requested, .reason = reason};
-        };
+        const auto keep = [&desc](const char *reason)
+        { return Placement{.pool = desc.pool, .decision = PlacementDecision::keep_requested, .reason = reason}; };
 
         if (!config_.prefer_default)
         {

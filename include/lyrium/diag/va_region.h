@@ -49,12 +49,23 @@ struct VaRegion
 // threshold it clears. Pinned by test because "at least this big" reads very
 // differently from "between these sizes".
 inline constexpr auto free_bucket_thresholds = std::array<std::uint64_t, 9u>{
-    1ull << 30, 512ull << 20, 256ull << 20, 128ull << 20, 64ull << 20,
-    32ull << 20, 16ull << 20, 4ull << 20,   1ull << 20,
+    1ull << 30,
+    512ull << 20,
+    256ull << 20,
+    128ull << 20,
+    64ull << 20,
+    32ull << 20,
+    16ull << 20,
+    4ull << 20,
+    1ull << 20,
 };
 
 inline constexpr auto committed_bucket_thresholds = std::array<std::uint64_t, 5u>{
-    256ull << 20, 64ull << 20, 16ull << 20, 4ull << 20, 1ull << 20,
+    256ull << 20,
+    64ull << 20,
+    16ull << 20,
+    4ull << 20,
+    1ull << 20,
 };
 
 inline constexpr auto big_block_threshold = std::uint64_t{16ull << 20};

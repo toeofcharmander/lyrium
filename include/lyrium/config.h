@@ -8,9 +8,9 @@
 #include <system_error>
 #include <unordered_map>
 
+#include "lyrium/config_parse.h"
 #include "lyrium/dao/engine_hooks.h"
 #include "lyrium/log.h"
-#include "lyrium/config_parse.h"
 #include "lyrium/utils.h"
 
 namespace lyrium

@@ -86,13 +86,14 @@ template <class Levels>
         const auto pitch = blocks_for(level_width) * block_bytes;
         const auto rows = blocks_for(level_height);
 
-        out.push_back(MipLevel{
-            .width = level_width,
-            .height = level_height,
-            .pitch = pitch,
-            .rows = rows,
-            .offset = offset,
-        });
+        out.push_back(
+            MipLevel{
+                .width = level_width,
+                .height = level_height,
+                .pitch = pitch,
+                .rows = rows,
+                .offset = offset,
+            });
 
         offset += static_cast<std::size_t>(pitch) * rows;
         level_width = std::max(level_width / 2u, 1u);

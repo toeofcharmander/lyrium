@@ -10,8 +10,8 @@
 #include <windows.h>
 
 #include "lyrium/containers/string.h"
-#include "lyrium/containers/vector.h"
 #include "lyrium/containers/unordered_map.h"
+#include "lyrium/containers/vector.h"
 #include "lyrium/dao/inline_hook.h"
 #include "lyrium/dao/targets.h"
 #include "lyrium/log.h"
@@ -190,15 +190,11 @@ auto cache_snapshot(const void *cache, std::int32_t &memory, std::int32_t &pendi
            read_cache_int(cache, cache_pending_offset, pending);
 }
 
-LYRIUM_THISCALL auto load_texture_file_detour(
-    void *self,
-    void *edx,
-    void *ret_buf,
-    const void *path,
-    int option) -> void *
+LYRIUM_THISCALL auto load_texture_file_detour(void *self, void *edx, void *ret_buf, const void *path, int option)
+    -> void *
 {
-    const auto trace = FirstCallTrace{
-        1u << 0u, "engine load_texture_file: enter", "engine load_texture_file: returned"};
+    const auto trace =
+        FirstCallTrace{1u << 0u, "engine load_texture_file: enter", "engine load_texture_file: returned"};
     const auto guard = ReentryGuard{};
 
     const auto original = reinterpret_cast<LoadTextureFileFn>(hook_load_texture_file.trampoline());
@@ -220,8 +216,8 @@ LYRIUM_THISCALL auto create_texture_cached_detour(
     int usage,
     int format) -> void *
 {
-    const auto trace = FirstCallTrace{
-        1u << 1u, "engine create_texture_cached: enter", "engine create_texture_cached: returned"};
+    const auto trace =
+        FirstCallTrace{1u << 1u, "engine create_texture_cached: enter", "engine create_texture_cached: returned"};
     const auto guard = ReentryGuard{};
 
     const auto original = reinterpret_cast<CreateTextureCachedFn>(hook_create_texture_cached.trampoline());
@@ -244,9 +240,7 @@ LYRIUM_THISCALL auto create_texture_registered_detour(
     int g) -> void *
 {
     const auto trace = FirstCallTrace{
-        1u << 2u,
-        "engine create_texture_registered: enter",
-        "engine create_texture_registered: returned"};
+        1u << 2u, "engine create_texture_registered: enter", "engine create_texture_registered: returned"};
     const auto guard = ReentryGuard{};
 
     const auto original = reinterpret_cast<CreateTextureRegisteredFn>(hook_create_texture_registered.trampoline());
@@ -255,17 +249,10 @@ LYRIUM_THISCALL auto create_texture_registered_detour(
     return result;
 }
 
-LYRIUM_THISCALL auto stream_load_detour(
-    void *self,
-    void *edx,
-    void *ret_buf,
-    void *stream,
-    int a,
-    int b,
-    int c) -> void *
+LYRIUM_THISCALL auto stream_load_detour(void *self, void *edx, void *ret_buf, void *stream, int a, int b, int c)
+    -> void *
 {
-    const auto trace =
-        FirstCallTrace{1u << 3u, "engine stream_load: enter", "engine stream_load: returned"};
+    const auto trace = FirstCallTrace{1u << 3u, "engine stream_load: enter", "engine stream_load: returned"};
     const auto guard = ReentryGuard{};
 
     const auto original = reinterpret_cast<StreamLoadFn>(hook_stream_load.trampoline());
@@ -281,8 +268,8 @@ LYRIUM_STDCALL auto decode_texture_memory_detour(
     void *owner,
     int unused) -> void *
 {
-    const auto trace = FirstCallTrace{
-        1u << 4u, "engine decode_texture_memory: enter", "engine decode_texture_memory: returned"};
+    const auto trace =
+        FirstCallTrace{1u << 4u, "engine decode_texture_memory: enter", "engine decode_texture_memory: returned"};
     const auto guard = ReentryGuard{};
 
     last_d3d_result.valid = false;
@@ -303,8 +290,8 @@ LYRIUM_THISCALL auto create_texture_2d_detour(
     int format_index,
     int pool_index) -> void *
 {
-    const auto trace = FirstCallTrace{
-        1u << 5u, "engine create_texture_2d: enter", "engine create_texture_2d: returned"};
+    const auto trace =
+        FirstCallTrace{1u << 5u, "engine create_texture_2d: enter", "engine create_texture_2d: returned"};
     const auto guard = ReentryGuard{};
 
     last_d3d_result.valid = false;
@@ -328,16 +315,11 @@ LYRIUM_THISCALL auto create_texture_2d_detour(
     return result;
 }
 
-LYRIUM_THISCALL auto create_texture_from_memory_detour(
-    void *self,
-    void *edx,
-    const void *source,
-    unsigned int size) -> void *
+LYRIUM_THISCALL auto create_texture_from_memory_detour(void *self, void *edx, const void *source, unsigned int size)
+    -> void *
 {
     const auto trace = FirstCallTrace{
-        1u << 6u,
-        "engine create_texture_from_memory: enter",
-        "engine create_texture_from_memory: returned"};
+        1u << 6u, "engine create_texture_from_memory: enter", "engine create_texture_from_memory: returned"};
     const auto guard = ReentryGuard{};
 
     const auto original = reinterpret_cast<CreateTextureFromMemoryFn>(hook_create_texture_from_memory.trampoline());
@@ -359,9 +341,7 @@ LYRIUM_THISCALL auto create_volume_from_memory_detour(
     int f) -> void *
 {
     const auto trace = FirstCallTrace{
-        1u << 7u,
-        "engine create_volume_from_memory: enter",
-        "engine create_volume_from_memory: returned"};
+        1u << 7u, "engine create_volume_from_memory: enter", "engine create_volume_from_memory: returned"};
     const auto guard = ReentryGuard{};
 
     const auto original = reinterpret_cast<CreateVolumeFromMemoryFn>(hook_create_volume_from_memory.trampoline());
@@ -395,7 +375,6 @@ LYRIUM_THISCALL auto evict_detour(void *self, void *edx, int max_count) -> void
         counter_evicted.fetch_add(
             static_cast<std::uint64_t>(pending_before - pending_after), std::memory_order_relaxed);
     }
-
 }
 
 LYRIUM_THISCALL auto clear_detour(void *self, void *edx) -> void
@@ -412,7 +391,6 @@ LYRIUM_THISCALL auto clear_detour(void *self, void *edx) -> void
     auto memory_after = std::int32_t{};
     auto pending_after = std::int32_t{};
     cache_snapshot(self, memory_after, pending_after);
-
 }
 
 auto track_allocation(void *pointer, std::size_t size) -> void
@@ -430,7 +408,6 @@ auto track_allocation(void *pointer, std::size_t size) -> void
     counter_large_allocs.fetch_add(1u, std::memory_order_relaxed);
     counter_large_alloc_bytes.fetch_add(size, std::memory_order_relaxed);
     live_allocation_bytes.fetch_add(size, std::memory_order_relaxed);
-
 }
 
 auto untrack_allocation(void *pointer) -> void
@@ -453,18 +430,15 @@ auto untrack_allocation(void *pointer) -> void
     }
 
     live_allocation_bytes.fetch_sub(entry.size, std::memory_order_relaxed);
-
 }
 
 LYRIUM_CDECL auto malloc_detour(std::size_t size) -> void *
 {
-    const auto trace =
-        FirstCallTrace{1u << 10u, "engine malloc: enter", "engine malloc: returned"};
+    const auto trace = FirstCallTrace{1u << 10u, "engine malloc: enter", "engine malloc: returned"};
     counter_malloc_calls.fetch_add(1u, std::memory_order_relaxed);
     counter_malloc_total_bytes.fetch_add(size, std::memory_order_relaxed);
     auto largest = counter_malloc_largest.load(std::memory_order_relaxed);
-    while (size > largest &&
-           !counter_malloc_largest.compare_exchange_weak(largest, size, std::memory_order_relaxed))
+    while (size > largest && !counter_malloc_largest.compare_exchange_weak(largest, size, std::memory_order_relaxed))
     {
     }
 
@@ -482,8 +456,7 @@ LYRIUM_CDECL auto malloc_detour(std::size_t size) -> void *
 
 LYRIUM_CDECL auto free_detour(void *pointer) -> void
 {
-    const auto trace =
-        FirstCallTrace{1u << 11u, "engine free: enter", "engine free: returned"};
+    const auto trace = FirstCallTrace{1u << 11u, "engine free: enter", "engine free: returned"};
     counter_free_calls.fetch_add(1u, std::memory_order_relaxed);
 
     if (!in_hook)
@@ -498,8 +471,7 @@ LYRIUM_CDECL auto free_detour(void *pointer) -> void
 
 LYRIUM_CDECL auto realloc_detour(void *pointer, std::size_t size) -> void *
 {
-    const auto trace =
-        FirstCallTrace{1u << 12u, "engine realloc: enter", "engine realloc: returned"};
+    const auto trace = FirstCallTrace{1u << 12u, "engine realloc: enter", "engine realloc: returned"};
     counter_realloc_calls.fetch_add(1u, std::memory_order_relaxed);
 
     const auto original = reinterpret_cast<ReallocFn>(hook_realloc.trampoline());
@@ -591,22 +563,35 @@ auto install_engine_hooks(const EngineConfig &configuration) -> void
 
     if (config.hook_texture_paths)
     {
-        planned.push_back({&hook_load_texture_file, TargetId::load_texture_file,
-                           reinterpret_cast<void *>(&load_texture_file_detour)});
-        planned.push_back({&hook_create_texture_cached, TargetId::create_texture_cached,
-                           reinterpret_cast<void *>(&create_texture_cached_detour)});
-        planned.push_back({&hook_create_texture_registered, TargetId::create_texture_registered,
-                           reinterpret_cast<void *>(&create_texture_registered_detour)});
-        planned.push_back({&hook_stream_load, TargetId::stream_load,
-                           reinterpret_cast<void *>(&stream_load_detour)});
-        planned.push_back({&hook_decode_texture_memory, TargetId::decode_texture_memory,
-                           reinterpret_cast<void *>(&decode_texture_memory_detour)});
-        planned.push_back({&hook_create_texture_2d, TargetId::create_texture_2d_factory,
-                           reinterpret_cast<void *>(&create_texture_2d_detour)});
-        planned.push_back({&hook_create_texture_from_memory, TargetId::create_texture_from_memory,
-                           reinterpret_cast<void *>(&create_texture_from_memory_detour)});
-        planned.push_back({&hook_create_volume_from_memory, TargetId::create_volume_from_memory,
-                           reinterpret_cast<void *>(&create_volume_from_memory_detour)});
+        planned.push_back(
+            {&hook_load_texture_file,
+             TargetId::load_texture_file,
+             reinterpret_cast<void *>(&load_texture_file_detour)});
+        planned.push_back(
+            {&hook_create_texture_cached,
+             TargetId::create_texture_cached,
+             reinterpret_cast<void *>(&create_texture_cached_detour)});
+        planned.push_back(
+            {&hook_create_texture_registered,
+             TargetId::create_texture_registered,
+             reinterpret_cast<void *>(&create_texture_registered_detour)});
+        planned.push_back({&hook_stream_load, TargetId::stream_load, reinterpret_cast<void *>(&stream_load_detour)});
+        planned.push_back(
+            {&hook_decode_texture_memory,
+             TargetId::decode_texture_memory,
+             reinterpret_cast<void *>(&decode_texture_memory_detour)});
+        planned.push_back(
+            {&hook_create_texture_2d,
+             TargetId::create_texture_2d_factory,
+             reinterpret_cast<void *>(&create_texture_2d_detour)});
+        planned.push_back(
+            {&hook_create_texture_from_memory,
+             TargetId::create_texture_from_memory,
+             reinterpret_cast<void *>(&create_texture_from_memory_detour)});
+        planned.push_back(
+            {&hook_create_volume_from_memory,
+             TargetId::create_volume_from_memory,
+             reinterpret_cast<void *>(&create_volume_from_memory_detour)});
     }
 
     if (config.hook_cache)

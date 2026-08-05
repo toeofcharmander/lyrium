@@ -21,7 +21,7 @@
 #pragma once
 
 #define LYRIUM_D3D9_FOURCC(a, b, c, d)                                                                                 \
-    ((static_cast<unsigned>(a)) | (static_cast<unsigned>(b) << 8) | (static_cast<unsigned>(c) << 16) |                  \
+    ((static_cast<unsigned>(a)) | (static_cast<unsigned>(b) << 8) | (static_cast<unsigned>(c) << 16) |                 \
      (static_cast<unsigned>(d) << 24))
 
 #define LYRIUM_D3D9_FORMAT_LIST(X)                                                                                     \

@@ -1,7 +1,7 @@
+#include "lyrium/resettable_texture.h"
 #include "lyrium/com/ref_count.h"
 #include "lyrium/texture/level_validity.h"
 #include "lyrium/texture/mip_layout.h"
-#include "lyrium/resettable_texture.h"
 
 #include <algorithm>
 #include <atomic>
@@ -42,11 +42,8 @@ class ResettableSurface final : public ::IDirect3DSurface9
     auto STDMETHODCALLTYPE AddRef() -> ::ULONG override;
     auto STDMETHODCALLTYPE Release() -> ::ULONG override;
     auto STDMETHODCALLTYPE GetDevice(::IDirect3DDevice9 **device) -> ::HRESULT override;
-    auto STDMETHODCALLTYPE SetPrivateData(
-        REFGUID guid,
-        const void *data,
-        ::DWORD size,
-        ::DWORD flags) -> ::HRESULT override;
+    auto STDMETHODCALLTYPE SetPrivateData(REFGUID guid, const void *data, ::DWORD size, ::DWORD flags)
+        -> ::HRESULT override;
     auto STDMETHODCALLTYPE GetPrivateData(REFGUID guid, void *data, ::DWORD *size) -> ::HRESULT override;
     auto STDMETHODCALLTYPE FreePrivateData(REFGUID guid) -> ::HRESULT override;
     auto STDMETHODCALLTYPE SetPriority(::DWORD priority) -> ::DWORD override;
@@ -55,10 +52,7 @@ class ResettableSurface final : public ::IDirect3DSurface9
     auto STDMETHODCALLTYPE GetType() -> ::D3DRESOURCETYPE override;
     auto STDMETHODCALLTYPE GetContainer(REFIID iid, void **container) -> ::HRESULT override;
     auto STDMETHODCALLTYPE GetDesc(::D3DSURFACE_DESC *desc) -> ::HRESULT override;
-    auto STDMETHODCALLTYPE LockRect(
-        ::D3DLOCKED_RECT *locked,
-        const ::RECT *rect,
-        ::DWORD flags) -> ::HRESULT override;
+    auto STDMETHODCALLTYPE LockRect(::D3DLOCKED_RECT *locked, const ::RECT *rect, ::DWORD flags) -> ::HRESULT override;
     auto STDMETHODCALLTYPE UnlockRect() -> ::HRESULT override;
     auto STDMETHODCALLTYPE GetDC(::HDC *dc) -> ::HRESULT override;
     auto STDMETHODCALLTYPE ReleaseDC(::HDC dc) -> ::HRESULT override;
@@ -121,10 +115,8 @@ class ResettableTexture final : public ::IDirect3DTexture9
             return E_POINTER;
         }
         *object = nullptr;
-        if (::IsEqualIID(iid, __uuidof(IUnknown)) ||
-            ::IsEqualIID(iid, __uuidof(IDirect3DResource9)) ||
-            ::IsEqualIID(iid, __uuidof(IDirect3DBaseTexture9)) ||
-            ::IsEqualIID(iid, __uuidof(IDirect3DTexture9)))
+        if (::IsEqualIID(iid, __uuidof(IUnknown)) || ::IsEqualIID(iid, __uuidof(IDirect3DResource9)) ||
+            ::IsEqualIID(iid, __uuidof(IDirect3DBaseTexture9)) || ::IsEqualIID(iid, __uuidof(IDirect3DTexture9)))
         {
             *object = static_cast<::IDirect3DTexture9 *>(this);
             AddRef();
@@ -167,11 +159,8 @@ class ResettableTexture final : public ::IDirect3DTexture9
         return D3D_OK;
     }
 
-    auto STDMETHODCALLTYPE SetPrivateData(
-        REFGUID guid,
-        const void *data,
-        ::DWORD size,
-        ::DWORD flags) -> ::HRESULT override
+    auto STDMETHODCALLTYPE SetPrivateData(REFGUID guid, const void *data, ::DWORD size, ::DWORD flags)
+        -> ::HRESULT override
     {
         auto *texture = acquire_inner();
         if (texture == nullptr)
@@ -320,11 +309,8 @@ class ResettableTexture final : public ::IDirect3DTexture9
         }
     }
 
-    auto STDMETHODCALLTYPE LockRect(
-        ::UINT level,
-        ::D3DLOCKED_RECT *locked,
-        const ::RECT *rect,
-        ::DWORD flags) -> ::HRESULT override
+    auto STDMETHODCALLTYPE LockRect(::UINT level, ::D3DLOCKED_RECT *locked, const ::RECT *rect, ::DWORD flags)
+        -> ::HRESULT override
     {
         if (locked == nullptr || level >= layouts_.size())
         {
@@ -332,11 +318,9 @@ class ResettableTexture final : public ::IDirect3DTexture9
         }
 
         const auto &layout = layouts_[level];
-        if (rect != nullptr &&
-            (rect->left < 0 || rect->top < 0 || rect->right <= rect->left ||
-             rect->bottom <= rect->top ||
-             static_cast<std::uint32_t>(rect->right) > layout.width ||
-             static_cast<std::uint32_t>(rect->bottom) > layout.height))
+        if (rect != nullptr && (rect->left < 0 || rect->top < 0 || rect->right <= rect->left ||
+                                rect->bottom <= rect->top || static_cast<std::uint32_t>(rect->right) > layout.width ||
+                                static_cast<std::uint32_t>(rect->bottom) > layout.height))
         {
             return D3DERR_INVALIDCALL;
         }
@@ -366,8 +350,7 @@ class ResettableTexture final : public ::IDirect3DTexture9
         state.view = view;
         state.flags = flags;
         locked->Pitch = static_cast<::INT>(layout.pitch);
-        locked->pBits = view + layout.offset +
-                        static_cast<std::size_t>(y) * layout.pitch +
+        locked->pBits = view + layout.offset + static_cast<std::size_t>(y) * layout.pitch +
                         static_cast<std::size_t>(x) * block_bytes_;
         return D3D_OK;
     }
@@ -517,8 +500,7 @@ class ResettableTexture final : public ::IDirect3DTexture9
         // The arithmetic lives in texture/mip_layout.h, where it is tested. It
         // decides the length of the mapping below and every offset handed back
         // from LockRect, so it is worth having covered rather than inlined here.
-        mapping_size_ =
-            texture::append_mip_levels(layouts_, shape_.width, shape_.height, shape_.levels, block_bytes_);
+        mapping_size_ = texture::append_mip_levels(layouts_, shape_.width, shape_.height, shape_.levels, block_bytes_);
         if (mapping_size_ == 0u || mapping_size_ > std::numeric_limits<::SIZE_T>::max())
         {
             return;
@@ -623,15 +605,7 @@ class ResettableTexture final : public ::IDirect3DTexture9
         const auto &layout = layouts_[level];
         auto *staging = static_cast<::IDirect3DTexture9 *>(nullptr);
         auto result = create_texture_(
-            device_,
-            layout.width,
-            layout.height,
-            1u,
-            0u,
-            shape_.format,
-            D3DPOOL_SYSTEMMEM,
-            &staging,
-            nullptr);
+            device_, layout.width, layout.height, 1u, 0u, shape_.format, D3DPOOL_SYSTEMMEM, &staging, nullptr);
         if (SUCCEEDED(result) && staging != nullptr)
         {
             auto locked = ::D3DLOCKED_RECT{};
@@ -734,8 +708,7 @@ auto STDMETHODCALLTYPE ResettableSurface::QueryInterface(REFIID iid, void **obje
         return E_POINTER;
     }
     *object = nullptr;
-    if (::IsEqualIID(iid, __uuidof(IUnknown)) ||
-        ::IsEqualIID(iid, __uuidof(IDirect3DResource9)) ||
+    if (::IsEqualIID(iid, __uuidof(IUnknown)) || ::IsEqualIID(iid, __uuidof(IDirect3DResource9)) ||
         ::IsEqualIID(iid, __uuidof(IDirect3DSurface9)))
     {
         *object = static_cast<::IDirect3DSurface9 *>(this);
@@ -770,11 +743,8 @@ auto STDMETHODCALLTYPE ResettableSurface::GetDevice(::IDirect3DDevice9 **device)
     return texture_->GetDevice(device);
 }
 
-auto STDMETHODCALLTYPE ResettableSurface::SetPrivateData(
-    REFGUID guid,
-    const void *data,
-    ::DWORD size,
-    ::DWORD flags) -> ::HRESULT
+auto STDMETHODCALLTYPE ResettableSurface::SetPrivateData(REFGUID guid, const void *data, ::DWORD size, ::DWORD flags)
+    -> ::HRESULT
 {
     auto *inner = surface();
     if (inner == nullptr)
@@ -786,10 +756,7 @@ auto STDMETHODCALLTYPE ResettableSurface::SetPrivateData(
     return result;
 }
 
-auto STDMETHODCALLTYPE ResettableSurface::GetPrivateData(
-    REFGUID guid,
-    void *data,
-    ::DWORD *size) -> ::HRESULT
+auto STDMETHODCALLTYPE ResettableSurface::GetPrivateData(REFGUID guid, void *data, ::DWORD *size) -> ::HRESULT
 {
     auto *inner = surface();
     if (inner == nullptr)
@@ -862,10 +829,8 @@ auto STDMETHODCALLTYPE ResettableSurface::GetDesc(::D3DSURFACE_DESC *desc) -> ::
     return texture_->GetLevelDesc(level_, desc);
 }
 
-auto STDMETHODCALLTYPE ResettableSurface::LockRect(
-    ::D3DLOCKED_RECT *locked,
-    const ::RECT *rect,
-    ::DWORD flags) -> ::HRESULT
+auto STDMETHODCALLTYPE ResettableSurface::LockRect(::D3DLOCKED_RECT *locked, const ::RECT *rect, ::DWORD flags)
+    -> ::HRESULT
 {
     return texture_->LockRect(level_, locked, rect, flags);
 }

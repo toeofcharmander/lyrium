@@ -13,11 +13,13 @@ using lyrium::PageAllocator;
 TEST(PageAllocatorTest, ForwardsTheRequestedSizeToTheAllocateCallable)
 {
     std::size_t seen = 0u;
-    auto allocator = PageAllocator{[&seen](std::size_t bytes) -> void * {
-                                       seen = bytes;
-                                       return nullptr;
-                                   },
-                                   [](void *) {}};
+    auto allocator = PageAllocator{
+        [&seen](std::size_t bytes) -> void *
+        {
+            seen = bytes;
+            return nullptr;
+        },
+        [](void *) {}};
 
     (void)allocator.allocate(1234u);
 
@@ -36,8 +38,7 @@ TEST(PageAllocatorTest, ForwardsThePointerToTheDeallocateCallable)
 {
     int storage = 0;
     void *seen = nullptr;
-    auto allocator =
-        PageAllocator{[](std::size_t) -> void * { return nullptr; }, [&seen](void *page) { seen = page; }};
+    auto allocator = PageAllocator{[](std::size_t) -> void * { return nullptr; }, [&seen](void *page) { seen = page; }};
 
     allocator.deallocate(&storage);
 
@@ -48,8 +49,7 @@ TEST(PageAllocatorTest, StaysEmptyForStatelessCallables)
 {
     // [[no_unique_address]] on the stored callables is what keeps the adapter
     // free, so a stateless pair should not grow the type.
-    const auto allocator =
-        PageAllocator{[](std::size_t) -> void * { return nullptr; }, [](void *) {}};
+    const auto allocator = PageAllocator{[](std::size_t) -> void * { return nullptr; }, [](void *) {}};
 
     EXPECT_LE(sizeof(allocator), sizeof(void *));
 }

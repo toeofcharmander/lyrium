@@ -29,7 +29,7 @@ LYRIUM_D3D9_POOL_LIST(LYRIUM_D3D9_CONFORMS)
 //    runtime without a translation table.
 #define LYRIUM_PIXEL_FORMAT_CONFORMS(name, value)                                                                      \
     static_assert(                                                                                                     \
-        static_cast<unsigned>(lyrium::texture::PixelFormat::name) == static_cast<unsigned>(name),                       \
+        static_cast<unsigned>(lyrium::texture::PixelFormat::name) == static_cast<unsigned>(name),                      \
         "PixelFormat::" #name " does not match the real D3DFORMAT value");
 
 LYRIUM_D3D9_FORMAT_LIST(LYRIUM_PIXEL_FORMAT_CONFORMS)
@@ -38,7 +38,7 @@ LYRIUM_D3D9_FORMAT_LIST(LYRIUM_PIXEL_FORMAT_CONFORMS)
 
 #define LYRIUM_TEXTURE_POOL_CONFORMS(name, value)                                                                      \
     static_assert(                                                                                                     \
-        static_cast<unsigned>(lyrium::texture::TexturePool::name) == static_cast<unsigned>(name),                       \
+        static_cast<unsigned>(lyrium::texture::TexturePool::name) == static_cast<unsigned>(name),                      \
         "TexturePool::" #name " does not match the real D3DPOOL value");
 
 LYRIUM_D3D9_POOL_LIST(LYRIUM_TEXTURE_POOL_CONFORMS)

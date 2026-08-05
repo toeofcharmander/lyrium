@@ -166,12 +166,8 @@ class BasicTextureLedger
     };
 
     using MapAllocator = Alloc<std::pair<const TextureHandle, Record>>;
-    using Map = std::unordered_map<
-        TextureHandle,
-        Record,
-        std::hash<TextureHandle>,
-        std::equal_to<TextureHandle>,
-        MapAllocator>;
+    using Map =
+        std::unordered_map<TextureHandle, Record, std::hash<TextureHandle>, std::equal_to<TextureHandle>, MapAllocator>;
 
     static constexpr auto unknown_bucket = std::size_t{4};
 

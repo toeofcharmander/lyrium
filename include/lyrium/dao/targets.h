@@ -199,6 +199,4 @@ inline constexpr auto target(TargetId id) -> const Target &
     return targets[static_cast<std::size_t>(id)];
 }
 
-
-
 }

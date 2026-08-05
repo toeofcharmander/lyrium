@@ -62,8 +62,7 @@ TEST(TexturePlacementPolicy, KeepsEverythingWhenDisabled)
 
 TEST(TexturePlacementPolicy, OnlyManagedTexturesAreRelocated)
 {
-    for (const auto pool :
-         {TexturePool::D3DPOOL_DEFAULT, TexturePool::D3DPOOL_SYSTEMMEM, TexturePool::D3DPOOL_SCRATCH})
+    for (const auto pool : {TexturePool::D3DPOOL_DEFAULT, TexturePool::D3DPOOL_SYSTEMMEM, TexturePool::D3DPOOL_SCRATCH})
     {
         auto desc = relocatable_request();
         desc.pool = pool;
@@ -124,8 +123,11 @@ TEST(TexturePlacementPolicy, EveryBlockCompressedFormatIsEligible)
 TEST(TexturePlacementPolicy, UncompressedFormatsAreNeverRelocated)
 {
     for (const auto format :
-         {PixelFormat::D3DFMT_A8R8G8B8, PixelFormat::D3DFMT_X8R8G8B8, PixelFormat::D3DFMT_R5G6B5,
-          PixelFormat::D3DFMT_A8, PixelFormat::D3DFMT_UNKNOWN})
+         {PixelFormat::D3DFMT_A8R8G8B8,
+          PixelFormat::D3DFMT_X8R8G8B8,
+          PixelFormat::D3DFMT_R5G6B5,
+          PixelFormat::D3DFMT_A8,
+          PixelFormat::D3DFMT_UNKNOWN})
     {
         auto desc = relocatable_request();
         desc.format = format;

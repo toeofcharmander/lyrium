@@ -67,23 +67,26 @@ TEST(RefCount, ConcurrentTryAddRefNeverResurrectsADyingObject)
         racers.reserve(8);
         for (int i = 0; i < 8; ++i)
         {
-            racers.emplace_back([&] {
-                while (!go.load(std::memory_order_acquire))
+            racers.emplace_back(
+                [&]
                 {
-                }
-                if (count.try_add_ref())
-                {
-                    acquired.fetch_add(1, std::memory_order_relaxed);
-                }
-            });
+                    while (!go.load(std::memory_order_acquire))
+                    {
+                    }
+                    if (count.try_add_ref())
+                    {
+                        acquired.fetch_add(1, std::memory_order_relaxed);
+                    }
+                });
         }
 
-        std::thread releaser{[&] {
-            while (!go.load(std::memory_order_acquire))
-            {
-            }
-            remaining_after_release.store(count.release(), std::memory_order_relaxed);
-        }};
+        std::thread releaser{[&]
+                             {
+                                 while (!go.load(std::memory_order_acquire))
+                                 {
+                                 }
+                                 remaining_after_release.store(count.release(), std::memory_order_relaxed);
+                             }};
 
         go.store(true, std::memory_order_release);
         for (auto &racer : racers)

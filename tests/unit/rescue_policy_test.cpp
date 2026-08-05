@@ -4,8 +4,8 @@
 
 #include "lyrium/policy/rescue_policy.h"
 
-using lyrium::policy::EvictAction;
 using lyrium::policy::escalation_strength;
+using lyrium::policy::EvictAction;
 using lyrium::policy::RescueConfig;
 using lyrium::policy::RescueInputs;
 using lyrium::policy::RescuePolicy;
@@ -61,12 +61,11 @@ TEST(RescuePolicy, AnyFailedCreateAlwaysActs)
                     inputs.largest_free_bytes = largest;
                     inputs.pending_releases = pending;
                     inputs.cache_available = cache;
-                    inputs.last_rescue_us = inputs.now_us;  // rate limit maximally hostile
+                    inputs.last_rescue_us = inputs.now_us; // rate limit maximally hostile
 
                     const auto plan = policy().plan(inputs);
-                    EXPECT_TRUE(plan.acts())
-                        << "attempt=" << attempt << " largest=" << largest << " pending=" << pending
-                        << " cache=" << cache << " produced no action";
+                    EXPECT_TRUE(plan.acts()) << "attempt=" << attempt << " largest=" << largest
+                                             << " pending=" << pending << " cache=" << cache << " produced no action";
                 }
             }
         }
@@ -303,11 +302,12 @@ TEST(RescuePolicy, LastRescueMustBeSeededByTheCaller)
 // The decision is constexpr, so it costs nothing on the create path.
 static_assert(!policy().plan(healthy()).acts());
 static_assert(policy()
-                  .plan(RescueInputs{
-                      .largest_free_bytes = 0u,
-                      .requested_bytes = 4u * mb,
-                      .now_us = 10'000'000,
-                      .last_rescue_us = 0,
-                      .pending_releases = 10,
-                      .cache_available = true})
+                  .plan(
+                      RescueInputs{
+                          .largest_free_bytes = 0u,
+                          .requested_bytes = 4u * mb,
+                          .now_us = 10'000'000,
+                          .last_rescue_us = 0,
+                          .pending_releases = 10,
+                          .cache_available = true})
                   .acts());
