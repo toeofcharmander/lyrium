@@ -997,6 +997,24 @@ auto acquire_bound_texture(::IDirect3DBaseTexture9 *texture) -> ::IDirect3DBaseT
     return inner;
 }
 
+auto flush_staging_pool() -> std::uint64_t
+{
+    auto handles = lyrium::Vector<::IDirect3DTexture9 *>{};
+    auto freed = std::uint64_t{};
+    {
+        auto lock = std::scoped_lock{staging_pool_mutex};
+        freed = staging_pool().held_bytes();
+        const auto taken = staging_pool().take_all();
+        handles.assign(taken.begin(), taken.end());
+    }
+    // Released outside the lock: Release re-enters the driver.
+    for (auto *staging : handles)
+    {
+        staging->Release();
+    }
+    return freed;
+}
+
 auto rewrap_resettable_texture(::IDirect3DBaseTexture9 *texture) -> ::IDirect3DBaseTexture9 *
 {
     if (texture == nullptr)

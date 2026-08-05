@@ -90,8 +90,16 @@ class FakeBackend final : public EvictionBackend
         ++managed_calls;
     }
 
+    auto release_scratch() -> std::uint64_t override
+    {
+        ++scratch_calls;
+        return scratch_bytes;
+    }
+
     bool available{true};
     std::int32_t pending{1000};
+    int scratch_calls{};
+    std::uint64_t scratch_bytes{4u * 1024u * 1024u};
     bool evict_reclaims_nothing{false};
     std::vector<std::int32_t> evict_calls{};
     int clear_calls{};
@@ -240,6 +248,11 @@ TEST(RescueCoordinator, DoesNotReEnterWhileAlreadyRescuing)
         auto evict_managed_resources() -> void override
         {
         }
+
+        auto release_scratch() -> std::uint64_t override
+        {
+            return 0u;
+        }
     };
 
     ManualClock clock{};
@@ -351,8 +364,10 @@ TEST(RescueCoordinator, SustainedPressureEscalatesWithoutWaitingForACreateToFail
         f.clock.advance(100'000);
     }
 
-    EXPECT_GT(f.backend.managed_calls + f.backend.clear_calls, 0)
+    EXPECT_GT(f.backend.scratch_calls + f.backend.clear_calls, 0)
         << "trimming alone never escalated while pressure persisted";
+    EXPECT_EQ(f.backend.managed_calls, 0)
+        << "managed eviction frees GPU memory, not address space, and stalls the scene";
 }
 
 TEST(RescueCoordinator, EscalationResetsAfterPressureIsRelieved)
@@ -424,7 +439,7 @@ TEST(RescueCoordinator, ASmallCreateUnderEstablishedPressureStillDrivesTheLadder
         coordinator.consider(64u * 1024u, 0u);
     }
 
-    EXPECT_GT(f.backend.managed_calls + f.backend.clear_calls, 0)
+    EXPECT_GT(f.backend.scratch_calls + f.backend.clear_calls, 0)
         << "small creates under pressure left the ladder stuck on its first rung";
 }
 
@@ -470,5 +485,28 @@ TEST(RescueCoordinator, AnEmptyCacheUnderSustainedPressureStillEscalates)
         f.clock.advance(100'000);
     }
 
-    EXPECT_GT(f.backend.managed_calls, 0) << "an empty pending queue idled the ladder while headroom stayed critical";
+    EXPECT_GT(f.backend.scratch_calls, 0) << "an empty pending queue idled the ladder while headroom stayed critical";
+}
+
+// EvictManagedResources frees video memory. The resource that starves is the
+// process address space below 2 GB, and a live session watched two managed
+// evictions leave headroom completely unmoved at 12 MB. The preemptive ladder
+// therefore never reaches for it; it survives only on the failure path, where a
+// create may genuinely be short of video memory.
+TEST(RescueCoordinator, ThePreemptiveLadderNeverEvictsManagedResources)
+{
+    Fixture f{};
+    auto coordinator = f.make();
+    f.probe.set(20u * mb);
+    f.backend.evict_reclaims_nothing = true;
+
+    for (auto i = 0; i < 10; ++i)
+    {
+        coordinator.consider(4u * mb, 0u);
+        f.clock.advance(100'000);
+    }
+
+    EXPECT_EQ(f.backend.managed_calls, 0);
+    EXPECT_GT(f.backend.scratch_calls, 0) << "the scratch pools are the cheapest space there is to give back";
+    EXPECT_GT(f.backend.clear_calls, 0) << "persistent pressure must still end in the cache clear";
 }

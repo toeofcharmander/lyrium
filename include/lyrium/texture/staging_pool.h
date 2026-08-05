@@ -81,6 +81,22 @@ class BasicStagingPool
         return true;
     }
 
+    // Surrenders the whole pool. Under rescue pressure its contents are address
+    // space the game needs more than we do; the caller destroys every returned
+    // handle. The pool refills naturally from later uploads.
+    [[nodiscard]] auto take_all() -> std::vector<Handle, Alloc<Handle>>
+    {
+        auto handles = std::vector<Handle, Alloc<Handle>>{};
+        handles.reserve(entries_.size());
+        for (const auto &entry : entries_)
+        {
+            handles.push_back(entry.handle);
+        }
+        entries_.clear();
+        held_bytes_ = 0u;
+        return handles;
+    }
+
     [[nodiscard]] auto held_bytes() const -> std::uint64_t
     {
         return held_bytes_;

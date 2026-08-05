@@ -90,7 +90,8 @@ TEST(RescuePolicy, EscalationIsMonotone)
 
     auto last = healthy();
     last.attempt = 3u;
-    EXPECT_EQ(policy().plan(last).action, EvictAction::clear_cache) << "escalation must terminate in a full clear";
+    EXPECT_EQ(policy().plan(last).action, EvictAction::clear_cache_and_managed)
+        << "escalation must terminate in a full clear";
 }
 
 TEST(RescuePolicy, TheWorstCaseIsStrongerThanTheUnboundedEvictItReplaces)
@@ -100,7 +101,7 @@ TEST(RescuePolicy, TheWorstCaseIsStrongerThanTheUnboundedEvictItReplaces)
     auto inputs = healthy();
     inputs.attempt = 4u;
 
-    EXPECT_EQ(policy().plan(inputs).action, EvictAction::clear_cache);
+    EXPECT_EQ(policy().plan(inputs).action, EvictAction::clear_cache_and_managed);
 }
 
 // ---------------------------------------------------------------------------

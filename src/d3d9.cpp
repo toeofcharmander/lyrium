@@ -178,7 +178,7 @@ auto log_ledger_snapshot(std::string_view reason, const lyrium::diag::VaStats &)
     const auto rescue = rescue_coordinator().stats();
     lyrium::log(
         "rescue[{}]: pressure={} preemptive={} on_failure={} evictions={} clears={} managed={} released={} "
-        "suppressed={} headroom={} last={} acted={}",
+        "suppressed={} scratch={}/{}kb headroom={} last={} acted={}",
         reason,
         rescue.under_pressure,
         rescue.preemptive,
@@ -188,6 +188,8 @@ auto log_ledger_snapshot(std::string_view reason, const lyrium::diag::VaStats &)
         rescue.managed_evictions,
         rescue.released_total,
         rescue.suppressed,
+        rescue.scratch_flushes,
+        rescue.scratch_bytes_released / 1024u,
         rescue.last_largest_free_bytes,
         rescue.last_reason,
         rescue.last_action_reason);
@@ -235,6 +237,17 @@ class EngineEvictionBackend final : public lyrium::policy::EvictionBackend
     [[nodiscard]] auto evict(std::int32_t max_count) -> std::int32_t override
     {
         return lyrium::dao::emergency_evict(max_count);
+    }
+
+    [[nodiscard]] auto release_scratch() -> std::uint64_t override
+    {
+        // The recycler is flushed too when enabled; both pools refill naturally.
+        auto freed = lyrium::flush_staging_pool();
+        if (config.recycler.enabled)
+        {
+            lyrium::TextureRecycler::instance().purge();
+        }
+        return freed;
     }
 
     [[nodiscard]] auto clear_cache() -> bool override

@@ -36,6 +36,11 @@ auto make_resettable_texture(
 // Returns nullptr when the wrapper is already dying or its inner texture cannot
 // be recreated, which the caller should treat as "bind nothing".
 auto acquire_bound_texture(::IDirect3DBaseTexture9 *texture) -> ::IDirect3DBaseTexture9 *;
+
+// Surrenders every pooled staging texture and returns the bytes freed. Called by
+// the rescue when the game's address space is under pressure: the pool's
+// contents are VA the game needs more than we do, and it refills naturally.
+auto flush_staging_pool() -> std::uint64_t;
 auto rewrap_resettable_texture(::IDirect3DBaseTexture9 *texture) -> ::IDirect3DBaseTexture9 *;
 
 auto before_resettable_texture_reset(::IDirect3DDevice9 *device) -> void;

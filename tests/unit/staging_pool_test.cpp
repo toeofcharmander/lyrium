@@ -104,3 +104,20 @@ TEST(StagingPool, HoldsMultipleEntriesOfTheSameShape)
     ASSERT_TRUE(second.has_value());
     EXPECT_NE(*first, *second);
 }
+
+// The pool's contents are address space the game may suddenly need more than we
+// do. Under rescue pressure the whole pool is surrendered: take_all hands every
+// handle back for the caller to destroy and returns the budget to zero.
+TEST(StagingPool, TakeAllSurrendersEverything)
+{
+    auto pool = Pool{32u * mb, 8u};
+    EXPECT_TRUE(pool.offer(shape_a, 1u * mb, 1));
+    EXPECT_TRUE(pool.offer(shape_b, 2u * mb, 2));
+
+    const auto taken = pool.take_all();
+
+    EXPECT_EQ(taken.size(), 2u);
+    EXPECT_EQ(pool.held_bytes(), 0u);
+    EXPECT_EQ(pool.size(), 0u);
+    EXPECT_FALSE(pool.acquire(shape_a).has_value());
+}

@@ -29,6 +29,12 @@ enum class EvictAction : std::uint8_t
     evict_cache,
     evict_cache_and_managed,
     clear_cache,
+    // The failure path's terminal rung: everything clear_cache does, plus
+    // EvictManagedResources. Distinct because the preemptive ladder must never
+    // touch managed resources -- that frees video memory while the starving
+    // resource is address space, and stalls the scene -- but a create that has
+    // already failed may genuinely be short of VRAM.
+    clear_cache_and_managed,
 };
 
 [[nodiscard]] constexpr auto escalation_strength(EvictAction action) -> std::uint8_t
@@ -118,6 +124,10 @@ struct RescuePlan
 {
     EvictAction action{EvictAction::none};
     std::int32_t max_count{};
+    // Also surrender the DLL's own scratch pools (staging textures and the
+    // recycler). Orthogonal to the action because it reclaims from us, not from
+    // the engine: it is the cheapest address space there is to give back.
+    bool flush_scratch{};
     bool enters_pressure{};
     bool leaves_pressure{};
     const char *reason{"idle"};
@@ -196,19 +206,25 @@ class RescuePolicy
         if (inputs.consecutive_preemptive >= config_.preemptive_escalate_after)
         {
             // Deliberately ahead of the pending_releases gate: with nothing
-            // queued a bounded evict is a no-op, but evicting managed resources
-            // or clearing outright still reclaims, and that is exactly the state
+            // queued a bounded evict is a no-op, but the scratch pools and a
+            // cache clear reclaim regardless, and that is exactly the state
             // where trimming has already failed to help.
+            //
+            // No EvictManagedResources here, ever: it frees video memory while
+            // the starving resource is the address space below 2 GB -- a live
+            // session watched two managed evictions leave 12 MB of headroom
+            // completely unmoved -- and forcing every managed texture to
+            // re-upload mid-scene is itself a stutter. It remains on the
+            // failure path, where a create may genuinely be short of VRAM.
             const auto clear = inputs.consecutive_preemptive >= config_.preemptive_clear_after;
             return RescuePlan{
-                .action =
-                    clear ? EvictAction::clear_cache
-                          : (config_.evict_managed ? EvictAction::evict_cache_and_managed : EvictAction::evict_cache),
+                .action = clear ? EvictAction::clear_cache : EvictAction::evict_cache,
                 .max_count = batch_for(clear ? 2u : 1u),
+                .flush_scratch = true,
                 .enters_pressure = true,
                 .leaves_pressure = false,
                 .reason = clear ? "preemptive: pressure survived repeated eviction, clearing cache"
-                                : "preemptive: pressure sustained, evicting managed resources too",
+                                : "preemptive: pressure sustained, flushing scratch pools",
             };
         }
 
@@ -312,7 +328,7 @@ class RescuePolicy
         }
 
         return RescuePlan{
-            .action = EvictAction::clear_cache,
+            .action = EvictAction::clear_cache_and_managed,
             .max_count = config_.evict_batch_max,
             .enters_pressure = true,
             .leaves_pressure = false,

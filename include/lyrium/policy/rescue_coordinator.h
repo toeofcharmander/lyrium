@@ -23,6 +23,9 @@ class EvictionBackend
     [[nodiscard]] virtual auto evict(std::int32_t max_count) -> std::int32_t = 0;
     [[nodiscard]] virtual auto clear_cache() -> bool = 0;
     virtual auto evict_managed_resources() -> void = 0;
+
+    // Frees the DLL's own scratch pools and returns the bytes surrendered.
+    [[nodiscard]] virtual auto release_scratch() -> std::uint64_t = 0;
 };
 
 class FreeSpaceProbe
@@ -52,6 +55,8 @@ struct RescueStats
     std::uint64_t managed_evictions{};
     std::uint64_t released_total{};
     std::uint64_t suppressed{};
+    std::uint64_t scratch_flushes{};
+    std::uint64_t scratch_bytes_released{};
     bool under_pressure{};
 
     // The inputs and verdict of the most recent decision, so a log line can say
@@ -185,6 +190,12 @@ class RescueCoordinator
     {
         auto released = std::int32_t{};
 
+        if (plan.flush_scratch)
+        {
+            ++stats_.scratch_flushes;
+            stats_.scratch_bytes_released += backend_->release_scratch();
+        }
+
         switch (plan.action)
         {
             case EvictAction::none: break;
@@ -202,6 +213,13 @@ class RescueCoordinator
                 break;
 
             case EvictAction::clear_cache:
+                if (backend_->clear_cache())
+                {
+                    ++stats_.cache_clears;
+                }
+                break;
+
+            case EvictAction::clear_cache_and_managed:
                 if (backend_->clear_cache())
                 {
                     ++stats_.cache_clears;
