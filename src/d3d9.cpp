@@ -139,6 +139,24 @@ auto main_pool_override_bytes() -> std::uint32_t
 }
 
 lyrium::dao::PoolPatchResult pool_patch_result{};
+
+// What plan_pool_split allowed, decided in DllMain alongside the budget so the two
+// can never disagree. create_side_pool honours this rather than the raw config.
+std::uint64_t planned_side_pool_bytes{};
+
+auto side_pool_override_bytes() -> std::uint64_t
+{
+    char path[MAX_PATH]{};
+    if (::GetModuleFileNameA(nullptr, path, MAX_PATH) == 0)
+    {
+        return 0u;
+    }
+    auto ini = std::string{path};
+    const auto slash = ini.find_last_of("\\/");
+    ini = (slash == std::string::npos ? std::string{} : ini.substr(0, slash + 1)) + "lyrium.ini";
+    const auto megabytes = ::GetPrivateProfileIntA("lyrium", "side_pool_mb", 0, ini.c_str());
+    return megabytes <= 0 ? 0u : static_cast<std::uint64_t>(megabytes) * 1024u * 1024u;
+}
 const char *allocation_watch_mode{"not attempted"};
 
 auto rescue_coordinator() -> lyrium::policy::RescueCoordinator &;
@@ -1358,6 +1376,7 @@ extern "C"
 
     // Needs the pool_alloc hook above, and the engine to have built its own pools;
     // both are true here and neither is true in DllMain.
+    config.engine.side_pool_bytes = planned_side_pool_bytes;
     lyrium::dao::create_side_pool();
         lyrium::breadcrumb("Direct3DCreate9: engine hooks installed");
 
@@ -1469,7 +1488,20 @@ extern "C"
             // the hooks will use.
             if (lyrium::dao::targets_verify_clean())
             {
-                pool_patch_result = lyrium::dao::patch_main_pool(main_pool_override_bytes());
+                // The side pool has to be paid for before the budget is written,
+                // not after. Setting main_pool_mb and side_pool_mb independently
+                // once put 905 MB of pools in a 2 GB address space and froze the
+                // game on a map load with every counter reading healthy.
+                const auto configured = main_pool_override_bytes();
+                const auto split = lyrium::dao::plan_pool_split(
+                    configured == 0u ? lyrium::dao::stock_budget_bytes : configured,
+                    side_pool_override_bytes(),
+                    process_is_large_address_aware);
+                planned_side_pool_bytes = split.side_bytes;
+                lyrium::log(
+                    "pool split: budget={} side={} ({})", split.budget_bytes, split.side_bytes, split.reason);
+                pool_patch_result =
+                    lyrium::dao::patch_main_pool(configured == 0u ? 0u : split.budget_bytes);
             }
             else
             {

@@ -41,6 +41,53 @@ inline constexpr auto main_pool_backoff_step_bytes = std::uint64_t{0x100000};
     return budget_bytes <= strings_pool_bytes ? 0u : budget_bytes - strings_pool_bytes;
 }
 
+// The smallest main pool worth running. With routing on, the largest single
+// request it still has to satisfy is under the threshold, but it must still hold
+// the working set -- measured at 306 MB peak with a side pool taking the rest.
+inline constexpr auto minimum_main_pool_bytes = std::uint64_t{320} * 1024 * 1024;
+
+struct PoolSplit
+{
+    std::uint32_t budget_bytes;
+    std::uint64_t side_bytes;
+    const char *reason;
+};
+
+// Decides how the pool budget and the side pool share the address space.
+//
+// This exists because the two are separate configuration keys and nothing stopped
+// them being set to a combination that cannot fit. Leaving the budget at 768 MB
+// and adding a 192 MB side pool put 905 MB of pools into a 2 GB address space,
+// and the game froze during a level load with every counter reading healthy --
+// the exact invisible failure this project exists to remove, caused by us.
+//
+// On a large-address-aware image there is a second 2 GB nobody has touched, so
+// the side pool is free and the budget is left alone. Without it, the side pool
+// has to come out of the budget, and if that would starve the main pool the side
+// pool is dropped instead: degrading to today's behaviour is always safe.
+[[nodiscard]] constexpr auto plan_pool_split(
+    std::uint64_t configured_budget_bytes,
+    std::uint64_t side_bytes,
+    bool large_address_aware) -> PoolSplit
+{
+    if (side_bytes == 0u)
+    {
+        return PoolSplit{static_cast<std::uint32_t>(configured_budget_bytes), 0u, "no side pool"};
+    }
+    if (large_address_aware)
+    {
+        return PoolSplit{static_cast<std::uint32_t>(configured_budget_bytes), side_bytes, "additive, image is 4 GB"};
+    }
+    if (configured_budget_bytes < side_bytes ||
+        expected_main_pool_bytes(configured_budget_bytes - side_bytes) < minimum_main_pool_bytes)
+    {
+        return PoolSplit{
+            static_cast<std::uint32_t>(configured_budget_bytes), 0u, "side pool dropped, would starve the main pool"};
+    }
+    return PoolSplit{
+        static_cast<std::uint32_t>(configured_budget_bytes - side_bytes), side_bytes, "split out of the budget"};
+}
+
 struct MainPoolOutcome
 {
     // False when the pool has not been read yet. Everything below is then zero and

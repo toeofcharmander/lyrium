@@ -101,3 +101,43 @@ TEST(PoolBudget, AnObservedPoolSaysSo)
 
     EXPECT_TRUE(outcome.observed);
 }
+
+TEST(PoolBudget, WithoutASidePoolTheBudgetIsUntouched)
+{
+    const auto split = lyrium::dao::plan_pool_split(768u * mb, 0u, false);
+
+    EXPECT_EQ(split.budget_bytes, 768u * mb);
+    EXPECT_EQ(split.side_bytes, 0u);
+}
+
+TEST(PoolBudget, OnATwoGigImageTheSidePoolComesOutOfTheBudget)
+{
+    // The failure this prevents is a hard freeze on map load. Leaving the budget
+    // at 768 and adding 192 put 905 MB of pools in a 2 GB address space and the
+    // game stopped during a level load with every counter reading healthy.
+    const auto split = lyrium::dao::plan_pool_split(768u * mb, 192u * mb, false);
+
+    EXPECT_EQ(split.budget_bytes, 576u * mb);
+    EXPECT_EQ(split.side_bytes, 192u * mb);
+    EXPECT_EQ(split.budget_bytes + split.side_bytes, 768u * mb);
+}
+
+TEST(PoolBudget, OnAFourGigImageTheSidePoolIsAdditive)
+{
+    // With 2.1 GB never touched above the line there is nothing to pay for, and
+    // shrinking the main pool would be a cost with no benefit.
+    const auto split = lyrium::dao::plan_pool_split(768u * mb, 192u * mb, true);
+
+    EXPECT_EQ(split.budget_bytes, 768u * mb);
+    EXPECT_EQ(split.side_bytes, 192u * mb);
+}
+
+TEST(PoolBudget, ASubtractionThatWouldStarveTheMainPoolDropsTheSidePoolInstead)
+{
+    // Degrading to today's behaviour is always available and always safe. Running
+    // with a main pool too small to hold the engine's working set is not.
+    const auto split = lyrium::dao::plan_pool_split(400u * mb, 320u * mb, false);
+
+    EXPECT_EQ(split.side_bytes, 0u);
+    EXPECT_EQ(split.budget_bytes, 400u * mb);
+}
