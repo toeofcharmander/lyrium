@@ -198,10 +198,46 @@ obtained at `this+0xE0`**, then dispatches to vtable slot 1. That is the one pla
 where the real Main Pool size is visible, and it is the obvious hook if we want
 "how big did the pool actually end up" in the log.
 
-Still unknown: what sub-allocates from Main Pool, and whether that allocator keeps
-a used/high-water figure worth reading. The manager object is
-`malloc(0x4d4)` at `DAT_00c2b584`, carrying four sub-allocator pointers at
-`+0x4c0..+0x4cc` and an index at `+0x4d0`.
+### What sub-allocates from it
+
+The manager is `malloc(0x4d4)` at `DAT_00c2b584`, holding four sub-allocators
+embedded at `+0x20`, `+0x140`, `+0x270`, `+0x398` and pointed to by an array at
+`+0x4c0..+0x4cc`. `FUN_004b9100(manager, id)` walks that array comparing `+0xD4`,
+the pool id. **Main Pool is id 0 and is the first entry**, `manager+0x20`, the base
+class with vtable `0x00AEF424` — established from the `mov ecx,[edx+0x4c0]` that
+sets up its registration call at `0x004b9039`.
+
+| what | where |
+|---|---|
+| allocator entry point | `FUN_004b92c0` at `0x004b92c0` |
+| pool lookup by id | `FUN_004b9100` at `0x004b9100` |
+| Main Pool `allocate` (vtable slot 4) | `FUN_004ba880` at `0x004ba880` |
+| Main Pool `free` (vtable slot 6) | `FUN_004b9d90` at `0x004b9d90` |
+| attach memory (vtable slot 1) | `FUN_004ba1d0` at `0x004ba1d0` |
+| next / previous block | `FUN_004b9a70` / `FUN_004b9aa0` |
+
+`FUN_004ba1d0` aligns the block up to 64 KB and stores the aligned start at
+`this+0xDC` and the usable byte count at `this+0xE4` — so the capacity actually in
+play is a little under what `HeapAlloc` returned. There is **no used or high-water
+counter on the object**: the bookkeeping is a free list built in place inside the
+block, with a size at header `+0`, the alignment shift at `+6`, an in-use byte at
+`+7`, and the payload `0x10` past the header.
+
+That gives two ways to make pool pressure visible, which is the thing the log has
+never had:
+
+- **Cheap, on the hot path.** `FUN_004b92c0` returns 0 when an allocation fails,
+  and it only does so after already retrying against Main Pool. A counter there is
+  the first direct signal that `main_pool_mb` is set too low — today that condition
+  reaches no counter at all, which is why the failure is invisible.
+- **Rich, off the hot path.** The block chain is walkable from `this+0xDC` with the
+  header layout above, giving used, free and largest-free inside the pool. It needs
+  the pool's own lock at `this+0x100`, so it belongs on the sampler thread with the
+  address-space walk, never on the create path.
+
+Neither is implemented. The addresses above are read from the binary but are not
+in `dao/targets.h` and carry no recorded prologue or hash yet, so nothing may hook
+them until they go through the same verification every other target does.
 
 ## main_pool_mb
 
