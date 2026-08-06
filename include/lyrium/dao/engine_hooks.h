@@ -141,6 +141,7 @@ struct EngineState
     std::uint64_t side_pool_allocs;
     std::uint64_t side_pool_alloc_bytes;
     std::uint64_t side_pool_full;
+    std::uint64_t side_pool_threshold_bytes;
 
     bool main_pool_walked;
     bool main_pool_walk_capped;

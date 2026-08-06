@@ -1370,6 +1370,7 @@ auto engine_state() -> EngineState
         state.side_pool_allocs = counter_side_allocs.load(std::memory_order_relaxed);
         state.side_pool_alloc_bytes = counter_side_bytes.load(std::memory_order_relaxed);
         state.side_pool_full = counter_side_full.load(std::memory_order_relaxed);
+        state.side_pool_threshold_bytes = side_threshold.load(std::memory_order_relaxed);
         state.side_pool_blocks = side_occupancy.blocks.load(std::memory_order_relaxed);
         state.side_pool_used_bytes = side_occupancy.used.load(std::memory_order_relaxed);
         state.side_pool_free_bytes = side_occupancy.free_bytes.load(std::memory_order_relaxed);

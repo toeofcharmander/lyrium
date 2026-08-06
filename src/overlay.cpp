@@ -272,6 +272,93 @@ auto draw_fragmentation(const diag::FreeSpaceSnapshot &snapshot, float heat) -> 
     ::ImGui::TextDisabled("small");
 }
 
+// One arena: how much clear space is left, against how much has to fit in one
+// piece. That ratio is the whole question -- when the clear run falls under the
+// requirement the engine stops asking and drops content without a word, so a bar
+// showing sliver counts describes the symptom while this shows the fault.
+//
+// needed == 0 means the requirement is not known (the address space has no single
+// figure), in which case the bar is drawn without a threshold marker.
+auto draw_headroom_row(const char *name, std::uint64_t clear, std::uint64_t needed, std::uint64_t capacity) -> void
+{
+    if (capacity == 0u)
+    {
+        return;
+    }
+
+    const auto ratio = needed == 0u ? 1.0f : static_cast<float>(clear) / static_cast<float>(needed);
+    // Under 1x is already failing; 2x is the point at which one more step down
+    // does not matter. Between them is where a session quietly goes wrong.
+    const auto tint = needed == 0u ? heat_colour(heat_from(clear))
+                      : ratio < 1.0f ? ::ImVec4{1.0f, 0.30f, 0.25f, 1.0f}
+                      : ratio < 2.0f ? ::ImVec4{1.0f, 0.70f, 0.25f, 1.0f}
+                                     : ::ImVec4{0.45f, 0.85f, 0.45f, 1.0f};
+
+    ::ImGui::TextDisabled("%-12s", name);
+    ::ImGui::SameLine();
+
+    auto *draw = ::ImGui::GetWindowDrawList();
+    const auto origin = ::ImGui::GetCursorScreenPos();
+    const auto width = ::ImGui::GetContentRegionAvail().x - 96.0f;
+    const auto height = ::ImGui::GetTextLineHeight();
+    const auto filled = width * std::min(1.0f, static_cast<float>(clear) / static_cast<float>(capacity));
+
+    draw->AddRectFilled(origin, ::ImVec2{origin.x + width, origin.y + height},
+                        ::ImGui::GetColorU32(::ImVec4{0.14f, 0.14f, 0.16f, 1.0f}));
+    draw->AddRectFilled(origin, ::ImVec2{origin.x + filled, origin.y + height}, ::ImGui::GetColorU32(tint));
+
+    // The line the clear run must stay to the right of.
+    if (needed != 0u && needed < capacity)
+    {
+        const auto mark = origin.x + width * (static_cast<float>(needed) / static_cast<float>(capacity));
+        draw->AddLine(::ImVec2{mark, origin.y - 1.0f}, ::ImVec2{mark, origin.y + height + 1.0f},
+                      ::ImGui::GetColorU32(::ImVec4{1.0f, 1.0f, 1.0f, 0.75f}), 1.0f);
+    }
+
+    ::ImGui::Dummy(::ImVec2{width, height});
+    ::ImGui::SameLine();
+    if (needed == 0u)
+    {
+        ::ImGui::Text("%.0f MB", static_cast<double>(megabytes(clear)));
+    }
+    else
+    {
+        ::ImGui::PushStyleColor(::ImGuiCol_Text, tint);
+        ::ImGui::Text("%.0f/%.0f MB", static_cast<double>(megabytes(clear)), static_cast<double>(megabytes(needed)));
+        ::ImGui::PopStyleColor();
+    }
+}
+
+// Largest clear run in each arena against what it must still fit in one piece.
+auto draw_headroom() -> void
+{
+    auto snapshot = diag::FreeSpaceSnapshot{};
+    const auto engine = dao::engine_state();
+
+    if (diag::Sampler::instance().try_snapshot(snapshot))
+    {
+        const auto clear =
+            snapshot.largest_free_below_2g != 0u ? snapshot.largest_free_below_2g : snapshot.largest_free;
+        draw_headroom_row("address", clear, 0u, snapshot.total_free != 0u ? snapshot.total_free : clear);
+    }
+
+    if (engine.main_pool_observed)
+    {
+        // With routing on the main pool only ever has to fit something under the
+        // threshold; without it, the largest request the engine makes.
+        const auto needed = engine.side_pool_created ? engine.side_pool_threshold_bytes
+                                                     : engine.pool_alloc_largest_bytes;
+        draw_headroom_row("main pool", engine.main_pool_largest_free_bytes, needed, engine.main_pool_bytes);
+    }
+
+    if (engine.side_pool_created)
+    {
+        draw_headroom_row(
+            "side pool", engine.side_pool_largest_free_bytes, engine.pool_alloc_largest_bytes,
+            engine.side_pool_bytes);
+    }
+}
+
 auto draw_summary() -> void
 {
     auto snapshot = diag::FreeSpaceSnapshot{};
@@ -542,6 +629,9 @@ auto render(::IDirect3DDevice9 *device) -> void
     ::ImGui::Begin("LYRIUM");
 
     draw_summary();
+
+    ::ImGui::Spacing();
+    draw_headroom();
 
     // Everything below is for debugging rather than playing, so it starts shut.
     ::ImGui::Spacing();
