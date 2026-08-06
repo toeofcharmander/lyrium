@@ -14,6 +14,7 @@
 #include "lyrium/containers/vector.h"
 #include "lyrium/dao/inline_hook.h"
 #include "lyrium/dao/pool_layout.h"
+#include "lyrium/dao/pool_occupancy.h"
 #include "lyrium/dao/targets.h"
 #include "lyrium/diag/alloc_context.h"
 #include "lyrium/log.h"
@@ -219,15 +220,16 @@ auto read_engine_u32(const void *base, std::size_t offset, std::uint32_t &out) -
     return true;
 }
 
-// Read the main pool out of the engine's allocator manager rather than hooking the
-// registrar, which cannot work: the pool is built at engine startup through a lazy
-// getter, long before Direct3DCreate9 exists to install hooks from. A session with
-// that hook installed and verified recorded pools=0.
+// Locate the main pool object inside the engine's allocator manager, by the same
+// walk the engine's own lookup does. Every hop is guarded: the manager pointer is a
+// bare global with no prologue to hash, so nothing read through it can be verified
+// by comparison and the plausibility screen is the only check this path can have.
 //
-// Every hop is guarded, and the result has to look like a pool before it is
-// believed. The manager pointer is a bare global with no prologue to hash, so the
-// plausibility screen is the only verification available for this path.
-auto read_main_pool(std::uint32_t &base_out, std::uint64_t &size_out, std::uint64_t &usable_out) -> bool
+// This exists because a detour on the registrar cannot work -- the pool is built at
+// engine startup through a lazy getter, long before Direct3DCreate9 gives lyrium
+// anywhere to install from. A session with that hook installed and verified
+// recorded pools=0.
+auto find_main_pool() -> const void *
 {
     const auto delta = image_base_delta();
     const auto *site = reinterpret_cast<const void *>(manager_pointer_site + static_cast<std::uintptr_t>(delta));
@@ -235,49 +237,131 @@ auto read_main_pool(std::uint32_t &base_out, std::uint64_t &size_out, std::uint6
     auto manager_value = std::uint32_t{};
     if (!read_engine_u32(site, 0u, manager_value) || manager_value == 0u)
     {
-        return false;
+        return nullptr;
     }
     const auto *manager = reinterpret_cast<const void *>(static_cast<std::uintptr_t>(manager_value));
 
-    // Same walk the engine's own lookup does: four slots, matched on the id.
     for (auto slot = std::size_t{0}; slot < manager_pool_slots; ++slot)
     {
-        auto pool_value = std::uint32_t{};
-        if (!read_engine_u32(manager, manager_pool_array_offset + slot * sizeof(std::uint32_t), pool_value) ||
-            pool_value == 0u)
+        auto candidate = std::uint32_t{};
+        if (!read_engine_u32(manager, manager_pool_array_offset + slot * sizeof(std::uint32_t), candidate) ||
+            candidate == 0u)
         {
             continue;
         }
 
-        const auto *pool = reinterpret_cast<const void *>(static_cast<std::uintptr_t>(pool_value));
+        const auto *pool = reinterpret_cast<const void *>(static_cast<std::uintptr_t>(candidate));
         auto id = std::uint32_t{};
-        if (!read_engine_u32(pool, pool_id_offset, id) || static_cast<std::int32_t>(id) != main_pool_id)
+        if (read_engine_u32(pool, pool_id_offset, id) && static_cast<std::int32_t>(id) == main_pool_id)
         {
-            continue;
+            return pool;
         }
-
-        auto pool_base = std::uint32_t{};
-        auto pool_size = std::uint32_t{};
-        auto pool_usable = std::uint32_t{};
-        if (!read_engine_u32(pool, pool_base_offset, pool_base) ||
-            !read_engine_u32(pool, pool_size_offset, pool_size) ||
-            !read_engine_u32(pool, pool_usable_offset, pool_usable))
-        {
-            return false;
-        }
-
-        if (!main_pool_reading_is_plausible(pool_base, pool_size))
-        {
-            return false;
-        }
-
-        base_out = pool_base;
-        size_out = pool_size;
-        usable_out = pool_usable;
-        return true;
     }
 
-    return false;
+    return nullptr;
+}
+
+auto read_main_pool(std::uint32_t &base_out, std::uint64_t &size_out, std::uint64_t &usable_out) -> bool
+{
+    const auto *pool = find_main_pool();
+    if (pool == nullptr)
+    {
+        return false;
+    }
+
+    auto base = std::uint32_t{};
+    auto size = std::uint32_t{};
+    auto usable = std::uint32_t{};
+    if (!read_engine_u32(pool, pool_base_offset, base) || !read_engine_u32(pool, pool_size_offset, size) ||
+        !read_engine_u32(pool, pool_usable_offset, usable))
+    {
+        return false;
+    }
+
+    if (!main_pool_reading_is_plausible(base, size))
+    {
+        return false;
+    }
+
+    base_out = base;
+    size_out = size;
+    usable_out = usable;
+    return true;
+}
+
+// How full the pool is.
+//
+// One VirtualQuery for the whole region, then plain reads. The first version of
+// this queried per block, which on a 713 MB pool is hundreds of thousands of
+// syscalls per sample -- it stalled the sampler thread so badly the game appeared
+// to freeze and never emitted a single sample. The pool is one committed HeapAlloc
+// block, so one query covers every block inside it.
+//
+// Deliberately WITHOUT the engine's pool lock: taking an engine mutex from the
+// sampler thread is what produced the one hang this project could only recover from
+// by signing out. A walk can therefore race a live allocation, so it is bounded at
+// both ends -- every block is screened, the count is capped, and anything
+// inconsistent abandons the sample rather than reporting it.
+auto walk_main_pool(BlockTally &tally, std::uint64_t &elapsed_us, bool &capped) -> bool
+{
+    const auto started = now_us();
+    capped = false;
+
+    const auto *pool = find_main_pool();
+    if (pool == nullptr)
+    {
+        return false;
+    }
+
+    auto start = std::uint32_t{};
+    auto usable = std::uint32_t{};
+    if (!read_engine_u32(pool, pool_aligned_offset, start) || !read_engine_u32(pool, pool_usable_offset, usable) ||
+        start == 0u || usable == 0u)
+    {
+        return false;
+    }
+
+    // The single query that makes this affordable. Everything below reads directly,
+    // so the walk must never leave the range it just proved is committed.
+    const auto *region_start = reinterpret_cast<const std::uint8_t *>(static_cast<std::uintptr_t>(start));
+    auto info = ::MEMORY_BASIC_INFORMATION{};
+    if (::VirtualQuery(region_start, &info, sizeof(info)) == 0 || info.State != MEM_COMMIT)
+    {
+        return false;
+    }
+
+    const auto *committed_end = static_cast<const std::uint8_t *>(info.BaseAddress) + info.RegionSize;
+    const auto *walk_end = region_start + usable;
+    if (walk_end > committed_end)
+    {
+        // The pool spans more than the region we verified. One query is then not
+        // enough, and guessing is exactly what this function must not do.
+        return false;
+    }
+
+    const auto *cursor = region_start;
+    while (cursor < walk_end)
+    {
+        if (tally.blocks >= max_walk_blocks)
+        {
+            capped = true;
+            break;
+        }
+
+        std::uint32_t header[2]{};
+        std::memcpy(header, cursor, sizeof(header));
+
+        // The in-use byte sits at +7, the top byte of the dword at +4.
+        const auto in_use = ((header[1] >> 24u) & 0xFFu) != 0u;
+        if (!tally_block(tally, header[0], in_use, static_cast<std::uint64_t>(walk_end - cursor)))
+        {
+            return false;
+        }
+        cursor += header[0];
+    }
+
+    elapsed_us = static_cast<std::uint64_t>(now_us() - started);
+    return true;
 }
 
 LYRIUM_THISCALL auto load_texture_file_detour(void *self, void *edx, void *ret_buf, const void *path, int option)
@@ -936,6 +1020,20 @@ auto engine_state() -> EngineState
     state.pool_alloc_largest_bytes = counter_pool_alloc_largest.load(std::memory_order_relaxed);
     state.main_pool_observed =
         read_main_pool(state.main_pool_base, state.main_pool_bytes, state.main_pool_usable_bytes);
+
+    if (state.main_pool_observed)
+    {
+        auto tally = BlockTally{};
+        auto elapsed = std::uint64_t{};
+        auto capped = false;
+        state.main_pool_walked = walk_main_pool(tally, elapsed, capped);
+        state.main_pool_walk_us = elapsed;
+        state.main_pool_walk_capped = capped;
+        state.main_pool_blocks = tally.blocks;
+        state.main_pool_used_bytes = tally.used_bytes;
+        state.main_pool_free_bytes = tally.free_bytes;
+        state.main_pool_largest_free_bytes = tally.largest_free_bytes;
+    }
 
     state.large_allocation_bytes_live = live_allocation_bytes.load(std::memory_order_relaxed);
     {

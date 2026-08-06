@@ -94,6 +94,18 @@ struct EngineState
     // 64 KB alignment in the attach step has been taken off the front.
     std::uint64_t main_pool_bytes;
     std::uint64_t main_pool_usable_bytes;
+
+    // Occupancy, from walking the pool's own block chain. largest_free is the
+    // figure that matters: free space that is not contiguous cannot hold an asset,
+    // and the engine skipping an asset it cannot fit is invisible to every failure
+    // counter because it never attempts the allocation.
+    bool main_pool_walked;
+    bool main_pool_walk_capped;
+    std::uint64_t main_pool_walk_us;
+    std::uint32_t main_pool_blocks;
+    std::uint64_t main_pool_used_bytes;
+    std::uint64_t main_pool_free_bytes;
+    std::uint64_t main_pool_largest_free_bytes;
 };
 
 auto engine_state() -> EngineState;

@@ -250,7 +250,7 @@ auto log_ledger_snapshot(std::string_view reason, const lyrium::diag::VaStats &)
                 engine.main_pool_observed ? std::optional<std::uint64_t>{engine.main_pool_bytes} : std::nullopt);
             lyrium::log(
                 "pool[{}]: observed={} base={:#010x} main={} usable={} expected={} shortfall={} backed_off={} "
-                "allocs={} failures={} largest={}",
+                "allocs={} failures={} largest={} walked={} blocks={} used={} free={} largest_free={} walk_us={} capped={}",
                 reason,
                 outcome.observed,
                 engine.main_pool_base,
@@ -261,7 +261,14 @@ auto log_ledger_snapshot(std::string_view reason, const lyrium::diag::VaStats &)
                 outcome.backed_off,
                 engine.pool_allocs,
                 engine.pool_alloc_failures,
-                engine.pool_alloc_largest_bytes);
+                engine.pool_alloc_largest_bytes,
+                engine.main_pool_walked,
+                engine.main_pool_blocks,
+                engine.main_pool_used_bytes,
+                engine.main_pool_free_bytes,
+                engine.main_pool_largest_free_bytes,
+                engine.main_pool_walk_us,
+                engine.main_pool_walk_capped);
         }
     }
 
