@@ -119,3 +119,35 @@ TEST(SidePool, APoolIneligibleForTheEnginesFallbackIsRejected)
 
     EXPECT_FALSE(side_pool_is_attached(fields, arena_base, arena_bytes));
 }
+
+TEST(SidePool, RoutingTakesOnlyLargeUntaggedAllocations)
+{
+    // The threshold is the whole design: at 1 MB the largest allocation Main Pool
+    // still has to satisfy drops below 1 MB, against a measured floor of 73 MB.
+    EXPECT_TRUE(lyrium::dao::should_route(1024u * 1024u, 1024u * 1024u, 0));
+    EXPECT_TRUE(lyrium::dao::should_route(8u * 1024u * 1024u, 1024u * 1024u, 0));
+}
+
+TEST(SidePool, RoutingLeavesSmallAllocationsAlone)
+{
+    // The small-block population is what pins Main Pool, but relocating it means
+    // holding most of the pool. It stays where it is.
+    EXPECT_FALSE(lyrium::dao::should_route(4096u, 1024u * 1024u, 0));
+    EXPECT_FALSE(lyrium::dao::should_route(1024u * 1024u - 1u, 1024u * 1024u, 0));
+}
+
+TEST(SidePool, RoutingNeverOverridesAnAllocationTheEngineTagged)
+{
+    // A non-zero tag means the engine deliberately chose a pool for this
+    // allocation. Diverting it would change routing we do not understand, so only
+    // what would have gone to Main Pool is eligible.
+    EXPECT_FALSE(lyrium::dao::should_route(8u * 1024u * 1024u, 1024u * 1024u, 1));
+    EXPECT_FALSE(lyrium::dao::should_route(8u * 1024u * 1024u, 1024u * 1024u, lyrium::dao::side_pool_id));
+}
+
+TEST(SidePool, AZeroThresholdDoesNotRouteEverything)
+{
+    // Guards the config trap this project already documents: a malformed number
+    // parses as zero, and zero must mean "off", not "divert every allocation".
+    EXPECT_FALSE(lyrium::dao::should_route(8u * 1024u * 1024u, 0u, 0));
+}

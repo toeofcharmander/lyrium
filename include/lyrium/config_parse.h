@@ -131,6 +131,10 @@ inline auto apply_values(Config &config, const ConfigValues &values) -> void
     {
         config.engine.side_pool_bytes = std::strtoull(value.c_str(), nullptr, 10) * 1024ull * 1024ull;
     }
+    if (const auto value = lookup("side_pool_threshold_kb"); !value.empty())
+    {
+        config.engine.side_pool_threshold_bytes = std::strtoull(value.c_str(), nullptr, 10) * 1024ull;
+    }
 
     config.overlay = parse_bool(lookup("overlay"), false);
     config.allocation_watch = parse_bool(lookup("allocation_watch"), false);

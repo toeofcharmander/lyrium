@@ -63,6 +63,18 @@ using ReallocFn = void *(LYRIUM_CDECL *)(void *, std::size_t);
 // bare RET.
 using PoolAllocFn = void *(LYRIUM_CDECL *)(std::uint32_t, std::int32_t);
 
+// The side pool's engine-side surface. The three call-only targets, plus the two
+// vtable slots it is driven through.
+using PoolCtorFn = void *(LYRIUM_THISCALL *)(void *, void *);
+using PoolRegisterFn = void *(LYRIUM_THISCALL *)(
+    void *, void *, std::int32_t, const wchar_t *, void *, std::uint32_t, std::int32_t, std::int32_t);
+// vtable slot 4. RET 0x10, so four stack arguments after `this`.
+using PoolAllocateFn = void *(LYRIUM_THISCALL *)(void *, void *, std::uint32_t, std::int32_t, std::int32_t, std::int32_t);
+// vtable slots 6 and 15. RET 4.
+using PoolFreeFn = void(LYRIUM_THISCALL *)(void *, void *, void *);
+using PoolContainsFn = char(LYRIUM_THISCALL *)(void *, void *, void *);
+using PoolGetTagFn = std::int32_t(LYRIUM_CDECL *)();
+
 auto config = EngineConfig{};
 
 auto hook_load_texture_file = InlineHook{};
@@ -115,6 +127,13 @@ std::atomic<void *> side_pool{nullptr};
 std::atomic<std::uint32_t> side_pool_base_addr{};
 std::atomic<std::uint64_t> side_pool_extent{};
 const char *side_pool_state = "not attempted";
+// Resolved once at arming time so the hot path never re-reads a vtable.
+std::atomic<void *> side_allocate_fn{nullptr};
+std::atomic<void *> side_get_tag_fn{nullptr};
+std::atomic<std::uint64_t> side_threshold{};
+std::atomic<std::uint64_t> counter_side_allocs{};
+std::atomic<std::uint64_t> counter_side_bytes{};
+std::atomic<std::uint64_t> counter_side_full{};
 
 std::atomic<std::uint32_t> traced_hook_calls{};
 
@@ -698,12 +717,36 @@ LYRIUM_CDECL auto realloc_detour(void *pointer, std::size_t size) -> void *
 // allocation goes through, the body below calls nothing that could re-enter a
 // lyrium hook, and a thread_local read and write per allocation is a real cost on
 // the hottest path in the process.
-LYRIUM_CDECL auto pool_alloc_detour(std::uint32_t size, std::int32_t tag) -> void *
+LYRIUM_CDECL auto pool_alloc_detour(std::uint32_t size, std::int32_t align_shift) -> void *
 {
     const auto trace = FirstCallTrace{1u << 13u, "engine pool_alloc: enter", "engine pool_alloc: returned"};
 
+    // Divert the class Main Pool can no longer fit. Calling the side pool's
+    // Allocate directly rather than pushing a tag: the engine's push is a silent
+    // no-op at depth 32 while its pop always decrements, so an unbalanced pair
+    // would permanently misroute a thread, and this keeps the fallback ours rather
+    // than depending on an engine global we do not control.
+    if (auto *pool = side_pool.load(std::memory_order_acquire); pool != nullptr)
+    {
+        const auto tag_of = reinterpret_cast<PoolGetTagFn>(side_get_tag_fn.load(std::memory_order_relaxed));
+        if (should_route(size, side_threshold.load(std::memory_order_relaxed), tag_of()))
+        {
+            const auto allocate = reinterpret_cast<PoolAllocateFn>(side_allocate_fn.load(std::memory_order_relaxed));
+            if (auto *block = allocate(pool, nullptr, size, 0x7fffffff, 0x7fffffff, align_shift); block != nullptr)
+            {
+                counter_pool_allocs.fetch_add(1u, std::memory_order_relaxed);
+                counter_side_allocs.fetch_add(1u, std::memory_order_relaxed);
+                counter_side_bytes.fetch_add(size, std::memory_order_relaxed);
+                return block;
+            }
+            // Full. Fall through to Main Pool, which is what would have happened
+            // without the side pool at all.
+            counter_side_full.fetch_add(1u, std::memory_order_relaxed);
+        }
+    }
+
     const auto original = reinterpret_cast<PoolAllocFn>(hook_pool_alloc.trampoline());
-    auto *result = original(size, tag);
+    auto *result = original(size, align_shift);
 
     counter_pool_allocs.fetch_add(1u, std::memory_order_relaxed);
 
@@ -789,15 +832,6 @@ namespace
 {
 
 // --- the side pool ---------------------------------------------------------
-
-using PoolCtorFn = void *(LYRIUM_THISCALL *)(void *, void *);
-using PoolRegisterFn = void *(LYRIUM_THISCALL *)(
-    void *, void *, std::int32_t, const wchar_t *, void *, std::uint32_t, std::int32_t, std::int32_t);
-// vtable slot 4. RET 0x10, so four stack arguments after `this`.
-using PoolAllocateFn = void *(LYRIUM_THISCALL *)(void *, void *, std::uint32_t, std::int32_t, std::int32_t, std::int32_t);
-// vtable slots 6 and 15. RET 4.
-using PoolFreeFn = void(LYRIUM_THISCALL *)(void *, void *, void *);
-using PoolContainsFn = char(LYRIUM_THISCALL *)(void *, void *, void *);
 
 auto vtable_slot(const void *object, std::size_t offset) -> void *
 {
@@ -996,6 +1030,10 @@ auto create_side_pool() -> void
         return;
     }
 
+    side_allocate_fn.store(vtable_slot(pool, pool_vtable_allocate), std::memory_order_relaxed);
+    side_get_tag_fn.store(
+        reinterpret_cast<void *>(target(TargetId::pool_get_tag).address + delta), std::memory_order_relaxed);
+    side_threshold.store(config.side_pool_threshold_bytes, std::memory_order_relaxed);
     side_pool_base_addr.store(fields.aligned, std::memory_order_relaxed);
     side_pool_extent.store(fields.usable, std::memory_order_relaxed);
     side_pool_state = "created";
@@ -1273,6 +1311,9 @@ auto engine_state() -> EngineState
     {
         state.side_pool_base = side_pool_base_addr.load(std::memory_order_relaxed);
         state.side_pool_bytes = side_pool_extent.load(std::memory_order_relaxed);
+        state.side_pool_allocs = counter_side_allocs.load(std::memory_order_relaxed);
+        state.side_pool_alloc_bytes = counter_side_bytes.load(std::memory_order_relaxed);
+        state.side_pool_full = counter_side_full.load(std::memory_order_relaxed);
 
         auto tally = BlockTally{};
         auto elapsed = std::uint64_t{};

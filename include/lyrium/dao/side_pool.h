@@ -58,6 +58,24 @@ inline constexpr auto pool_default_align_log2 = std::uint32_t{4};
     return requested + attach_alignment;
 }
 
+// Whether an allocation should be diverted to the side pool.
+//
+// Three conditions, each load-bearing. Size is the point of the whole exercise:
+// only the class that Main Pool can no longer fit is moved, and the small-block
+// population that does the pinning stays where it is, because relocating that
+// would mean holding most of the pool.
+//
+// A non-zero tag means the engine deliberately chose a pool for this allocation,
+// so only what would have gone to Main Pool is eligible -- diverting a tagged
+// allocation would change routing nobody here understands.
+//
+// A zero threshold is off, not "everything". This project already documents that
+// a malformed number parses as zero, and that has to fail in the safe direction.
+[[nodiscard]] constexpr auto should_route(std::uint32_t size, std::uint64_t threshold, std::int32_t tag) -> bool
+{
+    return threshold != 0u && size >= threshold && (tag & 0xFFFF) == 0;
+}
+
 // The fields of a pool object, read back after registration.
 struct PoolFields
 {

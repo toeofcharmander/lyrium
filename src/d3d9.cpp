@@ -272,7 +272,8 @@ auto log_ledger_snapshot(std::string_view reason, const lyrium::diag::VaStats &)
                 engine.main_pool_walk_capped);
 
             lyrium::log(
-                "side[{}]: created={} state={} base={:#010x} bytes={} blocks={} used={} free={} largest_free={}",
+                "side[{}]: created={} state={} base={:#010x} bytes={} blocks={} used={} free={} largest_free={} "
+                "allocs={} alloc_bytes={} full={}",
                 reason,
                 engine.side_pool_created,
                 engine.side_pool_state,
@@ -281,7 +282,10 @@ auto log_ledger_snapshot(std::string_view reason, const lyrium::diag::VaStats &)
                 engine.side_pool_blocks,
                 engine.side_pool_used_bytes,
                 engine.side_pool_free_bytes,
-                engine.side_pool_largest_free_bytes);
+                engine.side_pool_largest_free_bytes,
+                engine.side_pool_allocs,
+                engine.side_pool_alloc_bytes,
+                engine.side_pool_full);
 
             // What a side pool at each candidate threshold would have to carry.
             // req is churn through the allocator; live is what is actually

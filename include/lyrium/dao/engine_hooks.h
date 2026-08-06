@@ -25,6 +25,11 @@ struct EngineConfig
     // registered in the pool manager's free slot. Zero is off. A malformed number
     // parses as zero, which is the safe direction and is why this is the default.
     std::uint64_t side_pool_bytes{0};
+
+    // Allocations at or above this go to the side pool. Measured: at 1 MB the
+    // largest request Main Pool still has to satisfy drops below 1 MB, against a
+    // floor of 73 MB. Zero is off.
+    std::uint64_t side_pool_threshold_bytes{1024ull * 1024ull};
 };
 
 // What the install gate decided. aborted means verification failed and the
@@ -129,6 +134,9 @@ struct EngineState
     std::uint64_t side_pool_free_bytes;
     std::uint64_t side_pool_largest_free_bytes;
     std::uint32_t side_pool_blocks;
+    std::uint64_t side_pool_allocs;
+    std::uint64_t side_pool_alloc_bytes;
+    std::uint64_t side_pool_full;
 
     bool main_pool_walked;
     bool main_pool_walk_capped;
