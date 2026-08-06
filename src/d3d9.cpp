@@ -1500,8 +1500,12 @@ extern "C"
                 planned_side_pool_bytes = split.side_bytes;
                 lyrium::log(
                     "pool split: budget={} side={} ({})", split.budget_bytes, split.side_bytes, split.reason);
-                pool_patch_result =
-                    lyrium::dao::patch_main_pool(configured == 0u ? 0u : split.budget_bytes);
+                // If a side pool is being created its cost has to be written to
+                // the budget even when main_pool_mb was never set, or the split is
+                // computed and then thrown away -- which is how the guard against
+                // over-committing the address space would have over-committed it.
+                const auto write_budget = split.side_bytes != 0u || configured != 0u;
+                pool_patch_result = lyrium::dao::patch_main_pool(write_budget ? split.budget_bytes : 0u);
             }
             else
             {
