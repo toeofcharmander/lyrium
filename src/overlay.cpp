@@ -155,54 +155,6 @@ auto ensure_initialised(::IDirect3DDevice9 *device) -> void
     backend_initialised = true;
 }
 
-// Draws the headroom meter: a bar that fills with how much contiguous room is
-// left, with a tick where the rescue arms. Seeing yourself approach the
-// threshold is worth more than being told after it fires.
-auto draw_meter(float fraction, float arm_fraction, float heat) -> void
-{
-    auto *draw = ::ImGui::GetWindowDrawList();
-    const auto origin = ::ImGui::GetCursorScreenPos();
-    const auto width = ::ImGui::GetContentRegionAvail().x;
-    constexpr auto height = 9.0f;
-
-    const auto top_left = origin;
-    const auto bottom_right = ::ImVec2{origin.x + width, origin.y + height};
-
-    draw->AddRectFilled(top_left, bottom_right, ::ImGui::GetColorU32(::ImVec4{0.11f, 0.035f, 0.045f, 1.0f}));
-
-    const auto filled = width * (fraction < 0.0f ? 0.0f : (fraction > 1.0f ? 1.0f : fraction));
-    if (filled > 1.0f)
-    {
-        // Dim at the tail, hot at the leading edge, so the bar reads as a glow
-        // rather than a flat block.
-        draw->AddRectFilledMultiColor(
-            ::ImVec2{top_left.x + 1.0f, top_left.y + 1.0f},
-            ::ImVec2{top_left.x + filled, bottom_right.y - 1.0f},
-            ::ImGui::GetColorU32(lerp(crystal_dim, crystal_lit, heat)),
-            ::ImGui::GetColorU32(heat_colour(heat)),
-            ::ImGui::GetColorU32(heat_colour(heat)),
-            ::ImGui::GetColorU32(lerp(crystal_dim, crystal_lit, heat)));
-    }
-
-    const auto arm_x = top_left.x + width * arm_fraction;
-    draw->AddLine(
-        ::ImVec2{arm_x, top_left.y - 2.0f},
-        ::ImVec2{arm_x, bottom_right.y + 2.0f},
-        ::ImGui::GetColorU32(crystal_core),
-        1.0f);
-
-    draw->AddRect(top_left, bottom_right, ::ImGui::GetColorU32(::ImVec4{0.36f, 0.08f, 0.10f, 1.0f}));
-    ::ImGui::Dummy(::ImVec2{width, height + 4.0f});
-}
-
-// Fragmentation, drawn as the distribution of free-block sizes.
-//
-// The first attempt drew the largest blocks to scale and was actively
-// misleading: one enormous untouched region dominated the bar, and showing only
-// the biggest blocks hides fragmentation by construction, because the big ones
-// are the healthy ones. What matters is the shape of the distribution. The same
-// free bytes migrating from a few large blocks into hundreds of small ones is
-// precisely the failure, and it shows here as mass moving to the right.
 auto draw_fragmentation(const diag::FreeSpaceSnapshot &snapshot, float heat) -> void
 {
     // Differenced by the same code the walk accumulates with, so the two can no
@@ -391,19 +343,16 @@ auto draw_summary() -> void
     }
 
     ::ImGui::Spacing();
+    // Three arenas, three bars. Only one of them ever breaks at a time, but which
+    // one is not predictable -- for two sessions it was the main pool while the
+    // address space, the only thing this panel used to show, read healthy
+    // throughout. Watching all three is the point.
     ::ImGui::TextDisabled("HEADROOM");
-    ::ImGui::PushStyleColor(::ImGuiCol_Text, colour);
-    ::ImGui::Text("%.0f MB", static_cast<double>(megabytes(headroom)));
-    ::ImGui::PopStyleColor();
-    ::ImGui::SameLine();
-    ::ImGui::TextDisabled("largest contiguous block");
-
-    // Scaled against the comfortable mark the heat curve uses, so the bar and
-    // the colour always agree.
-    constexpr auto full_scale = 384.0f;
-    draw_meter(megabytes(headroom) / full_scale, 32.0f / full_scale, heat);
-
+    ::ImGui::TextDisabled("largest block, against what must fit in one piece");
     ::ImGui::Spacing();
+    draw_headroom();
+    ::ImGui::Spacing();
+
     ::ImGui::TextDisabled("KEPT OUT OF MEMORY");
     if (have_totals)
     {
@@ -629,9 +578,6 @@ auto render(::IDirect3DDevice9 *device) -> void
     ::ImGui::Begin("LYRIUM");
 
     draw_summary();
-
-    ::ImGui::Spacing();
-    draw_headroom();
 
     // Everything below is for debugging rather than playing, so it starts shut.
     ::ImGui::Spacing();
