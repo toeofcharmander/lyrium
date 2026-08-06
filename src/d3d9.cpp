@@ -1372,6 +1372,16 @@ extern "C"
         lyrium::overlay::set_visible(config.overlay);
 
         lyrium::breadcrumb("Direct3DCreate9: installing engine hooks");
+        // The side pool is served from the pool_alloc detour, so asking for one
+        // and not also setting pool_hooks produced a configuration that logged a
+        // successful split and then silently did nothing. One key implies the
+        // other rather than the shipped ini needing both.
+        if (planned_side_pool_bytes != 0u && !config.engine.hook_pool)
+        {
+            config.engine.hook_pool = true;
+            lyrium::log("side pool: enabling pool hooks, which it cannot run without");
+        }
+
         lyrium::dao::install_engine_hooks(config.engine);
 
     // Needs the pool_alloc hook above, and the engine to have built its own pools;
