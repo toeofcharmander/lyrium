@@ -12,7 +12,12 @@ so a mask that is wrong in the optimistic direction turns byte verification -- t
 safety mechanism -- into a rubber stamp.
 
 Usage:
-  tools/ghidra/emit_target_rows.py <exe> <target_rows.tsv>
+  tools/ghidra/emit_target_rows.py <exe> <target_rows.tsv> [--call-only]
+
+--call-only emits rows for functions lyrium calls rather than hooks. Nothing is
+patched, so the instruction-boundary and relative-branch rules do not apply and
+patch_len becomes the whole prologue -- comparing sixteen bytes instead of five to
+nine is strictly better verification, and the only thing that matters for a call.
 """
 
 from __future__ import annotations
@@ -79,6 +84,7 @@ def main() -> int:
     if len(sys.argv) < 3:
         print(__doc__.strip(), file=sys.stderr)
         return 2
+    call_only = "--call-only" in sys.argv[3:]
     pe = Pe(Path(sys.argv[1]))
     relocs = base_relocations(pe)
 
@@ -102,7 +108,10 @@ def main() -> int:
         boundaries = [int(x) for x in r["boundaries"].split(",") if x]
         prologue = pe.read_va(va, PROLOGUE_BYTES)
 
-        patch_len, why = choose_patch_len(prologue, boundaries)
+        if call_only:
+            patch_len, why = PROLOGUE_BYTES, ""
+        else:
+            patch_len, why = choose_patch_len(prologue, boundaries)
         if patch_len == 0:
             print(f"REJECT {r['va']} {name}: {why}", file=sys.stderr)
             failures += 1
@@ -148,7 +157,7 @@ def main() -> int:
         .patch_len = {patch_len},
         .reloc_mask = 0x{mask:04X},
         .sha256 = "{digest}",
-        .prologue = {{{pretty}}},
+        .prologue = {{{pretty}}},{"" if not call_only else chr(10) + "        .call_only = true,"}
     }},""")
         print(f"        // first instructions: {' '.join(mnemonics[:6])}")
         print(f"        // 8 bytes after the body: {trailing.hex(' ')}"

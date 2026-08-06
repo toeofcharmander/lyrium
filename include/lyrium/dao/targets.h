@@ -20,6 +20,12 @@ struct Target
     std::uint16_t reloc_mask;
     const char *sha256;
     std::uint8_t prologue[prologue_bytes];
+
+    // True for a function lyrium calls rather than hooks. Nothing is patched, so
+    // patch_len carries the whole prologue and is verified in full: a wrong
+    // address here executes engine code with a fabricated `this`, which is worse
+    // than a hook that fails to install.
+    bool call_only{false};
 };
 
 enum class TargetId : std::size_t
@@ -38,6 +44,9 @@ enum class TargetId : std::size_t
     crt_free,
     crt_realloc,
     pool_alloc,
+    pool_ctor,
+    pool_register,
+    pool_get_tag,
     count,
 };
 
@@ -206,6 +215,50 @@ inline constexpr Target targets[] = {
         .reloc_mask = 0x01E0,
         .sha256 = "adb63dc92fa33b9ade94a4f29b83549388f909f2a605c8a7904df67fbe05a31e",
         .prologue = {0x57, 0x33, 0xFF, 0x39, 0x3D, 0x84, 0xB5, 0xC2, 0x00, 0x75, 0x0D, 0xE8, 0xD0, 0xFA, 0xFF, 0xFF},
+    },
+    // Called, never patched. lyrium builds its own ECPrivate::Pool on a
+    // reservation it owns and registers it in the manager's free slot, so these
+    // three are invoked with a `this` we construct. A wrong address here runs
+    // engine code against a fabricated object, which is worse than a hook that
+    // fails to install -- hence the whole prologue is compared rather than the
+    // five to nine bytes a patch would need.
+    {
+        .name = "pool_ctor",
+        .symbol = "sub_4B9850",
+        .comment = "ECPrivate::Pool::Pool - installs the vtable, the lock and Main Pool's defaults",
+        .address = 0x004b9850,
+        .size = 35,
+        .patch_len = 16,
+        // The vtable pointer 0x00AEF424; only its low byte falls inside the window.
+        .reloc_mask = 0x8000,
+        .sha256 = "44f78c9a309847eae9704075e4af9115c9f0c1e678572682d03c45b358cedd6a",
+        .prologue = {0x56, 0x8B, 0xF1, 0x6A, 0x00, 0x6A, 0x01, 0x8D, 0x8E, 0x00, 0x01, 0x00, 0x00, 0xC7, 0x06, 0x24},
+        .call_only = true,
+    },
+    {
+        .name = "pool_register",
+        .symbol = "sub_4B93F0",
+        .comment = "ECPrivate::PoolManager::Register - stores id/base/size then calls vtable[1] attach",
+        .address = 0x004b93f0,
+        .size = 254,
+        .patch_len = 16,
+        .reloc_mask = 0x0078,
+        .sha256 = "1b07ff97edc441ce7ca08888b743a55c9a6e8f8b92f95175baad45b259cd590b",
+        .prologue = {0x6A, 0xFF, 0x68, 0x28, 0xFF, 0xAB, 0x00, 0x64, 0xA1, 0x00, 0x00, 0x00, 0x00, 0x50, 0x83, 0xEC},
+        .call_only = true,
+    },
+    {
+        .name = "pool_get_tag",
+        .symbol = "sub_4B8AF0",
+        .comment = "reads the thread's current pool tag from the TLS stack; 0 means Main Pool",
+        .address = 0x004b8af0,
+        .size = 36,
+        .patch_len = 16,
+        // The _tls_index global at 0x00C3EED4, at offsets 8..11.
+        .reloc_mask = 0x0F00,
+        .sha256 = "6886764e7f8328539068e2ec612846f18340136018480d606751f61ecce2d517",
+        .prologue = {0x64, 0x8B, 0x0D, 0x2C, 0x00, 0x00, 0x00, 0xA1, 0xD4, 0xEE, 0xC3, 0x00, 0x8B, 0x04, 0x81, 0x8B},
+        .call_only = true,
     },
 };
 

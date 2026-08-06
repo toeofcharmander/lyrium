@@ -898,10 +898,11 @@ auto targets_verify_clean() -> bool
     {
         const auto id = static_cast<TargetId>(i);
         if (id == TargetId::crt_malloc || id == TargetId::crt_free || id == TargetId::crt_realloc ||
-            id == TargetId::pool_alloc)
+            id == TargetId::pool_alloc || target(id).call_only)
         {
-            // Allocator and pool hooks are opt-in and off by default, so a mismatch
-            // there must not veto everything else.
+            // Allocator and pool machinery is opt-in and off by default, so a
+            // mismatch there must not veto everything else. Call-only rows are
+            // verified where they are used, at the point the side pool arms.
             continue;
         }
         if (!InlineHook::verify_target(target(id), delta).ok())

@@ -73,6 +73,11 @@ TEST(TargetsTable, PatchLengthCanHoldAJumpAndFitsTheSavedPrologue)
 {
     for (const auto &entry : targets)
     {
+        if (entry.call_only)
+        {
+            // Nothing is written at a call-only target, so there is no jump to fit.
+            continue;
+        }
         EXPECT_GE(entry.patch_len, jump_length)
             << entry.name << " has patch_len " << entry.patch_len
             << ", too short for a 5 byte jump; write_jump would overrun the saved originals";
@@ -120,6 +125,12 @@ TEST(TargetsTable, NoRelativeBranchStartsInsideThePatchedRange)
     // patch_len 7, which is correct by exactly one byte -- this pins that margin.
     for (const auto &entry : targets)
     {
+        if (entry.call_only)
+        {
+            // The bytes are never copied to a trampoline, so a relative branch
+            // among them is harmless.
+            continue;
+        }
         for (std::size_t i = 0u; i < entry.patch_len; ++i)
         {
             EXPECT_FALSE(looks_like_relative_branch(entry.prologue[i]))
@@ -136,5 +147,23 @@ TEST(TargetsTable, EachTargetIdResolvesToItsOwnEntry)
     {
         const auto &by_id = lyrium::dao::target(static_cast<TargetId>(i));
         EXPECT_EQ(&by_id, &targets[i]) << "target() does not map ordinal " << i << " to table row " << i;
+    }
+}
+
+TEST(TargetsTable, CallOnlyRowsCompareTheWholeRecordedPrologue)
+{
+    // A row lyrium calls rather than hooks patches nothing, so the constraints
+    // that exist to make a jump fit do not apply to it. What does apply is that a
+    // wrong address here runs arbitrary engine code with a fabricated `this`,
+    // which is worse than a dead hook -- so these compare all sixteen recorded
+    // bytes rather than the five to nine a patch would need.
+    for (const auto &entry : targets)
+    {
+        if (!entry.call_only)
+        {
+            continue;
+        }
+        EXPECT_EQ(entry.patch_len, prologue_bytes)
+            << entry.name << " is call-only but does not verify its whole prologue";
     }
 }
