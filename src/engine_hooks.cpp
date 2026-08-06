@@ -1026,13 +1026,22 @@ auto engine_state() -> EngineState
         auto tally = BlockTally{};
         auto elapsed = std::uint64_t{};
         auto capped = false;
-        state.main_pool_walked = walk_main_pool(tally, elapsed, capped);
+        const auto finished = walk_main_pool(tally, elapsed, capped);
         state.main_pool_walk_us = elapsed;
         state.main_pool_walk_capped = capped;
         state.main_pool_blocks = tally.blocks;
-        state.main_pool_used_bytes = tally.used_bytes;
-        state.main_pool_free_bytes = tally.free_bytes;
-        state.main_pool_largest_free_bytes = tally.largest_free_bytes;
+
+        // A capped walk stopped before the end, so its sums are a prefix of the
+        // pool and not totals. Reporting them as totals produced samples reading
+        // free=0 largest_free=0 on a pool that was 70% empty, which looks exactly
+        // like the exhaustion this is supposed to detect.
+        state.main_pool_walked = finished && !capped;
+        if (state.main_pool_walked)
+        {
+            state.main_pool_used_bytes = tally.used_bytes;
+            state.main_pool_free_bytes = tally.free_bytes;
+            state.main_pool_largest_free_bytes = tally.largest_free_bytes;
+        }
     }
 
     state.large_allocation_bytes_live = live_allocation_bytes.load(std::memory_order_relaxed);

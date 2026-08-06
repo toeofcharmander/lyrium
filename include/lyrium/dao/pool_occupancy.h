@@ -34,10 +34,12 @@
 namespace lyrium::dao
 {
 
-// A hard ceiling on the walk. At a 16-byte minimum block a 713 MB pool could hold
-// millions, and an unbounded loop over engine memory on the sampler thread is not
-// something to find out about from a frozen game.
-inline constexpr auto max_walk_blocks = std::uint32_t{500000};
+// A hard ceiling on the walk, and a backstop rather than an expected outcome. An
+// earlier value of 500,000 was reached during ordinary play in Denerim -- the pool
+// held over a quarter of a million blocks before the player entered a building --
+// so it truncated most samples. A walk that hits this reports itself incomplete;
+// its sums are a prefix of the pool, not totals.
+inline constexpr auto max_walk_blocks = std::uint32_t{4000000};
 
 struct BlockTally
 {
