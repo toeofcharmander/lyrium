@@ -289,10 +289,15 @@ an allocation above the 2 GB line -- `largest_free` fell to 1,155,137,536 and th
 side pool landed at `0x7ffffff0`. The cost is ~1.9 GB of committed memory, most of
 it never touched.
 
-Note that `largest_free` is constant *within* a session -- it drops once when the
-pools are placed and then does not move, because nothing else ever allocates above
-the line. A figure that never changes is not evidence that the upper half heals; it
-is evidence that nothing touches it.
+`largest_free` does move during a session on this configuration: one run went
+1101.6 -> 1085.8 -> 1065.6 -> 1049.8 -> 1029.6 MB and stayed down, while another
+sat flat at 1101.6 throughout. It declines and has not been observed recovering, so
+a high reading at the start of a session is a fresh process rather than a pool that
+healed -- worth knowing before reading two runs as one trend.
+
+`below2g` does recover. The same run went 402.5 -> 7.3 -> 21.8 -> 77.1 MB, so the
+low half is not one-way; texture reservations are released and the space comes
+back. It still is not the binding figure on an LAA image.
 
 The pool that demonstrably heals is the side pool. On the 945 MB configuration its
 largest run went 944.9 -> 803.9 -> 850.4 MB across a session while used rose to 131
