@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <utility>
 
@@ -238,19 +239,23 @@ auto log_ledger_snapshot(std::string_view reason, const lyrium::diag::VaStats &)
         // main is what the pool ended up with after the engine's back-off loop,
         // and expected is what the patched budget asked for; a gap between them
         // means the address space could not hand over the whole request.
-        if (engine.pool_registrations != 0u || engine.pool_allocs != 0u)
+        if (engine.main_pool_observed || engine.pool_allocs != 0u)
         {
             const auto budget = pool_patch_result.applied ? pool_patch_result.patched_bytes
                                 : pool_patch_result.original_bytes != 0u
                                     ? pool_patch_result.original_bytes
                                     : static_cast<std::uint32_t>(lyrium::dao::stock_budget_bytes);
-            const auto outcome = lyrium::dao::evaluate_main_pool(budget, engine.main_pool_bytes);
+            const auto outcome = lyrium::dao::evaluate_main_pool(
+                budget,
+                engine.main_pool_observed ? std::optional<std::uint64_t>{engine.main_pool_bytes} : std::nullopt);
             lyrium::log(
-                "pool[{}]: pools={} main={} expected={} shortfall={} backed_off={} allocs={} failures={} "
-                "largest={}",
+                "pool[{}]: observed={} base={:#010x} main={} usable={} expected={} shortfall={} backed_off={} "
+                "allocs={} failures={} largest={}",
                 reason,
-                engine.pool_registrations,
+                outcome.observed,
+                engine.main_pool_base,
                 outcome.actual_bytes,
+                engine.main_pool_usable_bytes,
                 outcome.expected_bytes,
                 outcome.shortfall_bytes,
                 outcome.backed_off,

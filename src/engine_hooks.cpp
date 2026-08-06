@@ -13,6 +13,7 @@
 #include "lyrium/containers/unordered_map.h"
 #include "lyrium/containers/vector.h"
 #include "lyrium/dao/inline_hook.h"
+#include "lyrium/dao/pool_layout.h"
 #include "lyrium/dao/targets.h"
 #include "lyrium/diag/alloc_context.h"
 #include "lyrium/log.h"
@@ -54,19 +55,9 @@ using MallocFn = void *(LYRIUM_CDECL *)(std::size_t);
 using FreeFn = void(LYRIUM_CDECL *)(void *);
 using ReallocFn = void *(LYRIUM_CDECL *)(void *, std::size_t);
 
-// The engine's own pool allocator. pool_alloc is __cdecl -- all three of its return
-// paths are a bare RET -- while pool_register is __thiscall with six stack
-// arguments, which its RET 0x18 states outright.
+// The engine's own pool allocator. __cdecl: all three of its return paths are a
+// bare RET.
 using PoolAllocFn = void *(LYRIUM_CDECL *)(std::uint32_t, std::int32_t);
-using PoolRegisterFn = void *(LYRIUM_THISCALL *)(
-    void *,
-    void *,
-    std::int32_t,
-    const wchar_t *,
-    void *,
-    std::uint32_t,
-    std::int32_t,
-    std::int32_t);
 
 auto config = EngineConfig{};
 
@@ -84,7 +75,6 @@ auto hook_malloc = InlineHook{};
 auto hook_free = InlineHook{};
 auto hook_realloc = InlineHook{};
 auto hook_pool_alloc = InlineHook{};
-auto hook_pool_register = InlineHook{};
 
 std::atomic<const void *> texture_cache_ptr{nullptr};
 
@@ -107,9 +97,6 @@ std::atomic<std::uint64_t> counter_malloc_largest{};
 std::atomic<std::uint64_t> counter_pool_allocs{};
 std::atomic<std::uint64_t> counter_pool_alloc_failures{};
 std::atomic<std::uint64_t> counter_pool_alloc_largest{};
-std::atomic<std::uint64_t> counter_pool_registrations{};
-std::atomic<const void *> main_pool_base_ptr{nullptr};
-std::atomic<std::uint64_t> main_pool_size_bytes{};
 
 std::atomic<std::uint32_t> traced_hook_calls{};
 
@@ -212,6 +199,85 @@ auto cache_snapshot(const void *cache, std::int32_t &memory, std::int32_t &pendi
 {
     return read_cache_int(cache, cache_texture_memory_offset, memory) &&
            read_cache_int(cache, cache_pending_offset, pending);
+}
+
+auto read_engine_u32(const void *base, std::size_t offset, std::uint32_t &out) -> bool
+{
+    if (base == nullptr)
+    {
+        return false;
+    }
+
+    const auto *address = static_cast<const std::uint8_t *>(base) + offset;
+    auto info = ::MEMORY_BASIC_INFORMATION{};
+    if (::VirtualQuery(address, &info, sizeof(info)) == 0 || info.State != MEM_COMMIT)
+    {
+        return false;
+    }
+
+    std::memcpy(&out, address, sizeof(out));
+    return true;
+}
+
+// Read the main pool out of the engine's allocator manager rather than hooking the
+// registrar, which cannot work: the pool is built at engine startup through a lazy
+// getter, long before Direct3DCreate9 exists to install hooks from. A session with
+// that hook installed and verified recorded pools=0.
+//
+// Every hop is guarded, and the result has to look like a pool before it is
+// believed. The manager pointer is a bare global with no prologue to hash, so the
+// plausibility screen is the only verification available for this path.
+auto read_main_pool(std::uint32_t &base_out, std::uint64_t &size_out, std::uint64_t &usable_out) -> bool
+{
+    const auto delta = image_base_delta();
+    const auto *site = reinterpret_cast<const void *>(manager_pointer_site + static_cast<std::uintptr_t>(delta));
+
+    auto manager_value = std::uint32_t{};
+    if (!read_engine_u32(site, 0u, manager_value) || manager_value == 0u)
+    {
+        return false;
+    }
+    const auto *manager = reinterpret_cast<const void *>(static_cast<std::uintptr_t>(manager_value));
+
+    // Same walk the engine's own lookup does: four slots, matched on the id.
+    for (auto slot = std::size_t{0}; slot < manager_pool_slots; ++slot)
+    {
+        auto pool_value = std::uint32_t{};
+        if (!read_engine_u32(manager, manager_pool_array_offset + slot * sizeof(std::uint32_t), pool_value) ||
+            pool_value == 0u)
+        {
+            continue;
+        }
+
+        const auto *pool = reinterpret_cast<const void *>(static_cast<std::uintptr_t>(pool_value));
+        auto id = std::uint32_t{};
+        if (!read_engine_u32(pool, pool_id_offset, id) || static_cast<std::int32_t>(id) != main_pool_id)
+        {
+            continue;
+        }
+
+        auto pool_base = std::uint32_t{};
+        auto pool_size = std::uint32_t{};
+        auto pool_usable = std::uint32_t{};
+        if (!read_engine_u32(pool, pool_base_offset, pool_base) ||
+            !read_engine_u32(pool, pool_size_offset, pool_size) ||
+            !read_engine_u32(pool, pool_usable_offset, pool_usable))
+        {
+            return false;
+        }
+
+        if (!main_pool_reading_is_plausible(pool_base, pool_size))
+        {
+            return false;
+        }
+
+        base_out = pool_base;
+        size_out = pool_size;
+        usable_out = pool_usable;
+        return true;
+    }
+
+    return false;
 }
 
 LYRIUM_THISCALL auto load_texture_file_detour(void *self, void *edx, void *ret_buf, const void *path, int option)
@@ -561,40 +627,6 @@ LYRIUM_CDECL auto pool_alloc_detour(std::uint32_t size, std::int32_t tag) -> voi
     return result;
 }
 
-LYRIUM_THISCALL auto pool_register_detour(
-    void *self,
-    void *edx,
-    std::int32_t id,
-    const wchar_t *name,
-    void *base,
-    std::uint32_t size,
-    std::int32_t flags,
-    std::int32_t unused) -> void *
-{
-    const auto trace = FirstCallTrace{1u << 14u, "engine pool_register: enter", "engine pool_register: returned"};
-    const auto guard = ReentryGuard{};
-
-    const auto original = reinterpret_cast<PoolRegisterFn>(hook_pool_register.trampoline());
-    auto *result = original(self, edx, id, name, base, size, flags, unused);
-
-    // The registrar rejects the pool unless name, base and size are all set, so a
-    // null result means nothing was recorded and neither should we.
-    if (result != nullptr)
-    {
-        counter_pool_registrations.fetch_add(1u, std::memory_order_relaxed);
-
-        // Pool 0 is "Main Pool" -- the id the engine's own fallback path looks up
-        // when an allocation against any other pool fails. The size here is what
-        // survived the back-off loop, not what was asked for.
-        if (id == 0)
-        {
-            main_pool_base_ptr.store(base, std::memory_order_relaxed);
-            main_pool_size_bytes.store(size, std::memory_order_relaxed);
-        }
-    }
-
-    return result;
-}
 
 InstallState install_state{};
 
@@ -710,8 +742,6 @@ auto install_engine_hooks(const EngineConfig &configuration) -> void
     if (config.hook_pool)
     {
         planned.push_back({&hook_pool_alloc, TargetId::pool_alloc, reinterpret_cast<void *>(&pool_alloc_detour)});
-        planned.push_back(
-            {&hook_pool_register, TargetId::pool_register, reinterpret_cast<void *>(&pool_register_detour)});
     }
 
     const auto delta = image_base_delta();
@@ -774,7 +804,7 @@ auto targets_verify_clean() -> bool
     {
         const auto id = static_cast<TargetId>(i);
         if (id == TargetId::crt_malloc || id == TargetId::crt_free || id == TargetId::crt_realloc ||
-            id == TargetId::pool_alloc || id == TargetId::pool_register)
+            id == TargetId::pool_alloc)
         {
             // Allocator and pool hooks are opt-in and off by default, so a mismatch
             // there must not veto everything else.
@@ -810,7 +840,6 @@ auto remove_engine_hooks() -> void
         &hook_evict,
         &hook_clear,
         &hook_pool_alloc,
-        &hook_pool_register,
     };
 
     for (auto *hook : all)
@@ -905,9 +934,8 @@ auto engine_state() -> EngineState
     state.pool_allocs = counter_pool_allocs.load(std::memory_order_relaxed);
     state.pool_alloc_failures = counter_pool_alloc_failures.load(std::memory_order_relaxed);
     state.pool_alloc_largest_bytes = counter_pool_alloc_largest.load(std::memory_order_relaxed);
-    state.pool_registrations = counter_pool_registrations.load(std::memory_order_relaxed);
-    state.main_pool_base = main_pool_base_ptr.load(std::memory_order_relaxed);
-    state.main_pool_bytes = main_pool_size_bytes.load(std::memory_order_relaxed);
+    state.main_pool_observed =
+        read_main_pool(state.main_pool_base, state.main_pool_bytes, state.main_pool_usable_bytes);
 
     state.large_allocation_bytes_live = live_allocation_bytes.load(std::memory_order_relaxed);
     {

@@ -82,12 +82,18 @@ struct EngineState
     std::uint64_t pool_allocs;
     std::uint64_t pool_alloc_failures;
     std::uint64_t pool_alloc_largest_bytes;
-    std::uint64_t pool_registrations;
 
-    // Size the engine registered for "Main Pool", which is what survived its
-    // back-off loop rather than what it asked for. Zero until it registers.
-    const void *main_pool_base;
+    // Read out of the engine's allocator manager, not hooked -- the pool is built
+    // long before Direct3DCreate9 gives us anywhere to install from. False means
+    // it has not been read, which is not the same as a pool of zero bytes, and the
+    // three figures below mean nothing when it is false.
+    bool main_pool_observed;
+    std::uint32_t main_pool_base;
+
+    // What survived the engine's back-off loop, and what is left of it once the
+    // 64 KB alignment in the attach step has been taken off the front.
     std::uint64_t main_pool_bytes;
+    std::uint64_t main_pool_usable_bytes;
 };
 
 auto engine_state() -> EngineState;

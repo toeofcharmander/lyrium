@@ -1,4 +1,5 @@
 #include <cstdint>
+#include <optional>
 
 #include <gtest/gtest.h>
 
@@ -79,4 +80,24 @@ TEST(PoolBudget, AFailedPoolIsShortByEverythingItAskedFor)
 
     EXPECT_TRUE(outcome.backed_off);
     EXPECT_EQ(outcome.shortfall_bytes, 795u * mb);
+}
+
+TEST(PoolBudget, AnUnobservedPoolIsNotReportedAsBackedOff)
+{
+    // The registrar runs at engine startup, long before the mod's hooks exist, so
+    // "we never saw it" is the normal case and must not read as "it got nothing".
+    // Reporting a 713 MB shortfall for a pool that is almost certainly fine is
+    // worse than reporting nothing at all.
+    const auto outcome = evaluate_main_pool(stock_budget_bytes, std::nullopt);
+
+    EXPECT_FALSE(outcome.observed);
+    EXPECT_FALSE(outcome.backed_off);
+    EXPECT_EQ(outcome.shortfall_bytes, 0u);
+}
+
+TEST(PoolBudget, AnObservedPoolSaysSo)
+{
+    const auto outcome = evaluate_main_pool(stock_budget_bytes, 795u * mb);
+
+    EXPECT_TRUE(outcome.observed);
 }
