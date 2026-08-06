@@ -51,6 +51,10 @@ auto install_engine_hooks(const EngineConfig &config) -> void;
 // engine has built its own pools. Declines and leaves the process untouched on any
 // doubt; the reason is in engine_state().side_pool_state either way.
 auto create_side_pool() -> void;
+
+// Walks both pools and caches the result. Costs up to 17 ms, so it belongs on the
+// sampler thread; engine_state() only ever reads what this left behind.
+auto refresh_pool_occupancy() -> void;
 auto engine_install_state() -> InstallState;
 
 // Read-only verification of every non-optional target. Safe from DllMain.

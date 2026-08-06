@@ -395,6 +395,77 @@ auto draw_diagnostics() -> void
     }
 }
 
+// Reads only the cached occupancy figures, refreshed on the sampler thread. The
+// walk itself is up to 17 ms and must never run per frame.
+auto draw_pools() -> void
+{
+    const auto engine = dao::engine_state();
+
+    if (!engine.main_pool_observed)
+    {
+        ::ImGui::TextDisabled("engine pool not found");
+        return;
+    }
+
+    // The number the whole side-pool design turns on: the largest single run of
+    // free space. When it falls under what the engine asks for in one piece, the
+    // engine stops asking and silently drops the asset.
+    const auto largest = megabytes(engine.main_pool_largest_free_bytes);
+    const auto largest_request = megabytes(engine.pool_alloc_largest_bytes);
+    ::ImGui::Text("main pool: %.0f MB", static_cast<double>(megabytes(engine.main_pool_bytes)));
+    ::ImGui::Text(
+        "  used %.0f MB, free %.0f MB, %u blocks",
+        static_cast<double>(megabytes(engine.main_pool_used_bytes)),
+        static_cast<double>(megabytes(engine.main_pool_free_bytes)),
+        engine.main_pool_blocks);
+
+    const auto tight = engine.side_pool_created ? false : largest < largest_request * 2u;
+    if (tight)
+    {
+        ::ImGui::TextColored(
+            ::ImVec4{1.0f, 0.4f, 0.3f, 1.0f},
+            "  largest free run %.0f MB vs %.0f MB asked for in one piece",
+            static_cast<double>(largest),
+            static_cast<double>(largest_request));
+    }
+    else
+    {
+        ::ImGui::Text(
+            "  largest free run %.0f MB (biggest single request %.0f MB)",
+            static_cast<double>(largest),
+            static_cast<double>(largest_request));
+    }
+
+    ::ImGui::Spacing();
+    if (!engine.side_pool_created)
+    {
+        ::ImGui::TextDisabled("side pool: %s", engine.side_pool_state);
+        return;
+    }
+
+    ::ImGui::Text("side pool: %.0f MB", static_cast<double>(megabytes(engine.side_pool_bytes)));
+    ::ImGui::Text(
+        "  used %.0f MB, free %.0f MB, largest run %.0f MB",
+        static_cast<double>(megabytes(engine.side_pool_used_bytes)),
+        static_cast<double>(megabytes(engine.side_pool_free_bytes)),
+        static_cast<double>(megabytes(engine.side_pool_largest_free_bytes)));
+    ::ImGui::Text(
+        "  took %llu allocations, %.0f MB",
+        static_cast<unsigned long long>(engine.side_pool_allocs),
+        static_cast<double>(megabytes(engine.side_pool_alloc_bytes)));
+
+    // Non-zero means the arena could not serve a request and it fell back to the
+    // main pool. Not a failure -- that is the old behaviour -- but it is the
+    // signal that the arena is too small or has fragmented.
+    if (engine.side_pool_full > 0u)
+    {
+        ::ImGui::TextColored(
+            ::ImVec4{1.0f, 0.6f, 0.2f, 1.0f},
+            "  FULL %llu times, fell back to the main pool",
+            static_cast<unsigned long long>(engine.side_pool_full));
+    }
+}
+
 auto draw_engine() -> void
 {
     const auto engine = dao::engine_state();
@@ -478,6 +549,11 @@ auto render(::IDirect3DDevice9 *device) -> void
     if (::ImGui::CollapsingHeader("diagnostics"))
     {
         draw_diagnostics();
+    }
+    ::ImGui::SetNextItemOpen(false, ::ImGuiCond_Once);
+    if (::ImGui::CollapsingHeader("pools"))
+    {
+        draw_pools();
     }
     ::ImGui::SetNextItemOpen(false, ::ImGuiCond_Once);
     if (::ImGui::CollapsingHeader("engine"))

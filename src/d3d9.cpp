@@ -223,6 +223,7 @@ auto log_ledger_snapshot(std::string_view reason, const lyrium::diag::VaStats &)
     // while free space is plentiful and the rescue is idle is the signature of
     // the hang, and it was invisible before this line existed.
     {
+        lyrium::dao::refresh_pool_occupancy();
         const auto engine = lyrium::dao::engine_state();
         lyrium::log(
             "engine[{}]: creates={} failures={} suspect={} loads={} evictions={} evicted={}",

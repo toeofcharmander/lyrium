@@ -135,6 +135,39 @@ std::atomic<std::uint64_t> counter_side_allocs{};
 std::atomic<std::uint64_t> counter_side_bytes{};
 std::atomic<std::uint64_t> counter_side_full{};
 
+// The walk is up to 17 ms over 1.4 million blocks. engine_state() is called from
+// the overlay every frame, so the result is cached here and refreshed only from
+// the sampler thread by refresh_pool_occupancy().
+struct OccupancyCache
+{
+    std::atomic<bool> walked{};
+    std::atomic<bool> capped{};
+    std::atomic<std::uint64_t> walk_us{};
+    std::atomic<std::uint32_t> blocks{};
+    std::atomic<std::uint64_t> used{};
+    std::atomic<std::uint64_t> free_bytes{};
+    std::atomic<std::uint64_t> largest_free{};
+};
+OccupancyCache main_occupancy;
+OccupancyCache side_occupancy;
+std::mutex used_sizes_mutex;
+SizeHistogram main_used_sizes{};
+
+auto store_occupancy(OccupancyCache &cache, const BlockTally &tally, std::uint64_t elapsed, bool capped, bool ok)
+    -> void
+{
+    cache.walked.store(ok && !capped, std::memory_order_relaxed);
+    cache.capped.store(capped, std::memory_order_relaxed);
+    cache.walk_us.store(elapsed, std::memory_order_relaxed);
+    if (ok && !capped)
+    {
+        cache.blocks.store(tally.blocks, std::memory_order_relaxed);
+        cache.used.store(tally.used_bytes, std::memory_order_relaxed);
+        cache.free_bytes.store(tally.free_bytes, std::memory_order_relaxed);
+        cache.largest_free.store(tally.largest_free_bytes, std::memory_order_relaxed);
+    }
+}
+
 std::atomic<std::uint32_t> traced_hook_calls{};
 
 class FirstCallTrace
@@ -922,6 +955,29 @@ auto probe_side_pool(void *pool, const void *manager, std::uint32_t arena_base, 
 
 }
 
+auto refresh_pool_occupancy() -> void
+{
+    auto tally = BlockTally{};
+    auto elapsed = std::uint64_t{};
+    auto capped = false;
+    const auto ok = walk_pool(find_main_pool(), tally, elapsed, capped);
+    store_occupancy(main_occupancy, tally, elapsed, capped, ok);
+    if (ok && !capped)
+    {
+        auto lock = std::scoped_lock{used_sizes_mutex};
+        main_used_sizes = tally.used_sizes;
+    }
+
+    if (auto *side = side_pool.load(std::memory_order_acquire); side != nullptr)
+    {
+        auto side_tally = BlockTally{};
+        auto side_elapsed = std::uint64_t{};
+        auto side_capped = false;
+        const auto side_ok = walk_pool(side, side_tally, side_elapsed, side_capped);
+        store_occupancy(side_occupancy, side_tally, side_elapsed, side_capped, side_ok);
+    }
+}
+
 auto create_side_pool() -> void
 {
     if (config.side_pool_bytes == 0u)
@@ -1314,41 +1370,23 @@ auto engine_state() -> EngineState
         state.side_pool_allocs = counter_side_allocs.load(std::memory_order_relaxed);
         state.side_pool_alloc_bytes = counter_side_bytes.load(std::memory_order_relaxed);
         state.side_pool_full = counter_side_full.load(std::memory_order_relaxed);
-
-        auto tally = BlockTally{};
-        auto elapsed = std::uint64_t{};
-        auto capped = false;
-        if (walk_pool(side, tally, elapsed, capped) && !capped)
-        {
-            state.side_pool_blocks = tally.blocks;
-            state.side_pool_used_bytes = tally.used_bytes;
-            state.side_pool_free_bytes = tally.free_bytes;
-            state.side_pool_largest_free_bytes = tally.largest_free_bytes;
-        }
+        state.side_pool_blocks = side_occupancy.blocks.load(std::memory_order_relaxed);
+        state.side_pool_used_bytes = side_occupancy.used.load(std::memory_order_relaxed);
+        state.side_pool_free_bytes = side_occupancy.free_bytes.load(std::memory_order_relaxed);
+        state.side_pool_largest_free_bytes = side_occupancy.largest_free.load(std::memory_order_relaxed);
     }
 
     if (state.main_pool_observed)
     {
-        auto tally = BlockTally{};
-        auto elapsed = std::uint64_t{};
-        auto capped = false;
-        const auto finished = walk_pool(find_main_pool(), tally, elapsed, capped);
-        state.main_pool_walk_us = elapsed;
-        state.main_pool_walk_capped = capped;
-        state.main_pool_blocks = tally.blocks;
-
-        // A capped walk stopped before the end, so its sums are a prefix of the
-        // pool and not totals. Reporting them as totals produced samples reading
-        // free=0 largest_free=0 on a pool that was 70% empty, which looks exactly
-        // like the exhaustion this is supposed to detect.
-        state.main_pool_walked = finished && !capped;
-        if (state.main_pool_walked)
-        {
-            state.main_pool_used_bytes = tally.used_bytes;
-            state.main_pool_free_bytes = tally.free_bytes;
-            state.main_pool_largest_free_bytes = tally.largest_free_bytes;
-            state.main_pool_used_sizes = tally.used_sizes;
-        }
+        state.main_pool_walked = main_occupancy.walked.load(std::memory_order_relaxed);
+        state.main_pool_walk_capped = main_occupancy.capped.load(std::memory_order_relaxed);
+        state.main_pool_walk_us = main_occupancy.walk_us.load(std::memory_order_relaxed);
+        state.main_pool_blocks = main_occupancy.blocks.load(std::memory_order_relaxed);
+        state.main_pool_used_bytes = main_occupancy.used.load(std::memory_order_relaxed);
+        state.main_pool_free_bytes = main_occupancy.free_bytes.load(std::memory_order_relaxed);
+        state.main_pool_largest_free_bytes = main_occupancy.largest_free.load(std::memory_order_relaxed);
+        auto lock = std::scoped_lock{used_sizes_mutex};
+        state.main_pool_used_sizes = main_used_sizes;
     }
 
     state.large_allocation_bytes_live = live_allocation_bytes.load(std::memory_order_relaxed);
