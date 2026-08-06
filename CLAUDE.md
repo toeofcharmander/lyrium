@@ -278,7 +278,16 @@ a map load. The main pool needs capacity only (307 MB peak) since nothing over t
 threshold lives there; the side pool needs capacity (178 MB peak) **and** a 71.6 MB
 clear run, which is why 192 MB was too small — it spent most of a session at 51-63
 MB largest run and got away with it only because the big block was allocated early.
-At 288 MB it holds 137-170 MB clear. On 4 GB, 1969 MB has run clean.
+At 288 MB it holds 137-170 MB clear.
+
+On 4 GB the recommendation is 1024/945 -- 55 + 969 + 945 = 1969 MB -- which is what
+the README documents because it is what has been run. It is far larger than the
+measured working set (the side pool used 74 MB of 945) and that is deliberate: the
+space is otherwise unused, and a heavy texture mod load is precisely the case a
+tight arena would fail on. It is also the only configuration ever observed to place
+an allocation above the 2 GB line -- `largest_free` fell to 1,155,137,536 and the
+side pool landed at `0x7ffffff0`. The cost is ~1.9 GB of committed memory, most of
+it never touched.
 
 ## Running it
 

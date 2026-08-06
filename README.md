@@ -20,7 +20,8 @@ If you have run a 4 GB patcher on `DAOrigins.exe`:
 
 ```ini
 [lyrium]
-side_pool_mb=512
+main_pool_mb=1024
+side_pool_mb=945
 ```
 
 If you have not (a stock 2 GB executable):
@@ -128,9 +129,24 @@ side    288 MB   needs capacity AND a 71.6 MB clear run
 ```
 
 On a 4 GB executable there is a second 2 GB that no session has ever touched, so
-the side pool is free — it is added without shrinking anything, and 512 MB gives
-plenty of room for heavy texture mod loads. A 1969 MB configuration has been run
-clean.
+the side pool is free — it is added on top rather than taken out of the budget.
+The recommended figures are deliberately generous, because heavy texture mod loads
+are exactly the case a tight arena would fail on and there is nothing to spend the
+space on otherwise:
+
+```
+strings   55 MB
+main     969 MB
+side     945 MB
+        ────────
+        1969 MB   run clean, and the only configuration ever observed to place
+                  an allocation above the 2 GB line at all
+```
+
+That costs roughly 1.9 GB of committed memory, most of it never touched — the
+engine commits its pool up front and so does the side pool. On a machine with 16 GB
+that is free; on 8 GB with other things running it is worth knowing about, and
+`side_pool_mb=512` still leaves 7x the largest working set ever measured.
 
 `main_pool_mb` is a **budget**, not a pool size: the engine takes a fixed 55 MB off
 the top for its string pool and asks for the rest. If that request will not fit it
