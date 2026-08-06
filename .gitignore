@@ -49,3 +49,11 @@ DartConfiguration.tcl
 
 # Release packages, built not tracked
 dist/
+
+__pycache__/
+
+# Ghidra project and everything generated from DAOrigins.exe. The scripts that
+# produce it are committed under tools/ghidra/; their output is not. It is bulky,
+# it is regenerable from the exe by anyone who owns the game, and it is derived
+# from a binary that is not ours to redistribute.
+/analysis/

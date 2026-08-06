@@ -91,8 +91,9 @@ call, and hooks COM interfaces by vtable slot (`hooks/com_hook.h`).
   inline hooks at fixed addresses. `dao/targets.h` is the single source of truth:
   each target carries its address, size, SHA-256 and prologue bytes.
 - **Pool patch** (`dao/pool_patch.h`) — rewrites the immediate at `0x004B8F30`,
-  `mov dword ptr [esp+0x18], 0x35200000`, the size of the pool the engine
-  sub-allocates all its own data from.
+  `mov dword ptr [esp+0x18], 0x35200000`. That figure is a **budget for two
+  allocations, not the size of one pool** — see "What the pool patch actually
+  changes".
 - **Rescue** (`policy/rescue_policy.h`, `policy/rescue_coordinator.h`) — bounded,
   rate-limited eviction from the engine's texture cache when the largest free
   block can no longer hold the request.
@@ -154,9 +155,59 @@ value. A malformed number becomes zero rather than falling back to the default.
 `Config::overlay` is declared `true` while the parser passes a fallback of
 `false`.
 
+## What the pool patch actually changes
+
+Read out of `DAOrigins.exe` with Ghidra (`tools/ghidra/`, output gitignored under
+`analysis/`). The whole sequence lives in one function, `FUN_004b8da0` at
+`0x004b8da0`, reached once through a lazy getter at `0x004b92c0`:
+
+```
+budget = 0x35200000                       <- 850 MB, the immediate at 0x004B8F30
+hHeap  = GetProcessHeap()                 <- the process DEFAULT heap, not a private one
+HeapLock(hHeap)
+  for each of three records:
+    "Strings"        0x3700000 (55 MB)    -> HeapAlloc, budget -= 55 MB
+    "StreamingMain"  size 0               -> skipped by `if (dwBytes != 0)`
+    "StreamingGPU"   size 0               -> skipped
+  while (budget > 1 MB && HeapAlloc(hHeap, 0, budget) == null)
+    budget -= 1 MB                        <- backs off until the request fits
+HeapUnlock(hHeap)
+  register the result as "Main Pool"
+```
+
+Three things follow, none of which the earlier behavioural model had:
+
+- **It is two blocks, not one**, and `main_pool_mb` sets the sum. Stock 850 MB
+  yields 55 MB of `Strings` plus a 795 MB `Main Pool`. Setting `main_pool_mb=768`
+  asks for a **713 MB** Main Pool, not 768.
+- **It is `HeapAlloc` on the process default heap.** Both requests are far over the
+  NT heap's 508 KB threshold, so each still becomes its own reservation — but the
+  engine never calls `HeapCreate` or `VirtualAlloc` itself. Every other Win32
+  allocation site in the image belongs to the statically linked MSVC CRT
+  (`__heap_init`, `___sbh_alloc_new_region`, `__calloc_impl` and friends).
+- **The Main Pool request already degrades gracefully.** If the address space
+  cannot satisfy it the engine retries 1 MB smaller, down to a 1 MB floor, and
+  carries on with whatever it got. So the engine's own pool may already be smaller
+  than the patched value implies, silently, and asking for too much is partly
+  self-correcting. `Strings` has no such loop.
+
+`FUN_004b93f0` at `0x004b93f0` is the registrar every pool goes through,
+`__thiscall`, taking `(id, name, base, size, flags, 0)`. It `wcsncpy`s the name to
+`this+0x54` (63 wchars), stores `base` at `this+0xD8` and **the size actually
+obtained at `this+0xE0`**, then dispatches to vtable slot 1. That is the one place
+where the real Main Pool size is visible, and it is the obvious hook if we want
+"how big did the pool actually end up" in the log.
+
+Still unknown: what sub-allocates from Main Pool, and whether that allocator keeps
+a used/high-water figure worth reading. The manager object is
+`malloc(0x4d4)` at `DAT_00c2b584`, carrying four sub-allocator pointers at
+`+0x4c0..+0x4cc` and an index at `+0x4d0`.
+
 ## main_pool_mb
 
-Default 850 MB, and the engine does not need it. Measured on a 2 GB install,
+Default 850 MB, and the engine does not need it. Note from the section above that
+this is the budget for `Strings` plus `Main Pool`, so the pool itself is 55 MB
+smaller than the number set here. Measured on a 2 GB install,
 relocation on, sessions of 4 to 10 minutes. Steady state is noisy because the
 sessions are not controlled; rescue activity is the clean signal.
 

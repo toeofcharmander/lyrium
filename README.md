@@ -53,6 +53,12 @@ reasons unrelated to this mod, and it stops the chain before the game runs.
 Hands part of the engine's 850 MB startup pool back to the address space. Off by
 default; the right value depends on your mod load.
 
+The number is a budget covering two allocations, not the size of one. The engine
+takes a fixed 55 MB off the top for a separate string pool and asks for the rest as
+its main pool, so `main_pool_mb=768` gives a 713 MB main pool. If that request will
+not fit it retries 1 MB smaller until it does, so the pool can end up smaller than
+you asked for without saying so.
+
 Measured on a heavily modded 2 GB install — largest unbroken free block during
 play:
 
