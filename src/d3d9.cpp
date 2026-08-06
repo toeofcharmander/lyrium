@@ -271,6 +271,18 @@ auto log_ledger_snapshot(std::string_view reason, const lyrium::diag::VaStats &)
                 engine.main_pool_walk_us,
                 engine.main_pool_walk_capped);
 
+            lyrium::log(
+                "side[{}]: created={} state={} base={:#010x} bytes={} blocks={} used={} free={} largest_free={}",
+                reason,
+                engine.side_pool_created,
+                engine.side_pool_state,
+                engine.side_pool_base,
+                engine.side_pool_bytes,
+                engine.side_pool_blocks,
+                engine.side_pool_used_bytes,
+                engine.side_pool_free_bytes,
+                engine.side_pool_largest_free_bytes);
+
             // What a side pool at each candidate threshold would have to carry.
             // req is churn through the allocator; live is what is actually
             // resident, taken from the walk, and is the figure that sizes an
@@ -1338,6 +1350,10 @@ extern "C"
 
         lyrium::breadcrumb("Direct3DCreate9: installing engine hooks");
         lyrium::dao::install_engine_hooks(config.engine);
+
+    // Needs the pool_alloc hook above, and the engine to have built its own pools;
+    // both are true here and neither is true in DllMain.
+    lyrium::dao::create_side_pool();
         lyrium::breadcrumb("Direct3DCreate9: engine hooks installed");
 
         if (const auto install = lyrium::dao::engine_install_state(); install.aborted)

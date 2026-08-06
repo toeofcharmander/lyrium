@@ -14,7 +14,9 @@
 #include "lyrium/containers/vector.h"
 #include "lyrium/dao/inline_hook.h"
 #include "lyrium/dao/pool_layout.h"
+#include "lyrium/allocators/global_allocator.h"
 #include "lyrium/dao/pool_occupancy.h"
+#include "lyrium/dao/side_pool.h"
 #include "lyrium/dao/size_histogram.h"
 #include "lyrium/dao/targets.h"
 #include "lyrium/diag/alloc_context.h"
@@ -104,6 +106,15 @@ std::atomic<std::uint64_t> counter_pool_alloc_largest{};
 // process; size_bucket is a single bsr.
 std::atomic<std::uint64_t> request_counts[SizeHistogram::bucket_count]{};
 std::atomic<std::uint64_t> request_bytes[SizeHistogram::bucket_count]{};
+
+// The side pool, published once by create_side_pool and never cleared during play.
+// Blocks handed to the engine outlive any teardown -- the engine resolves their
+// owner by address, so unregistering the pool would leave those frees with no
+// owner at all.
+std::atomic<void *> side_pool{nullptr};
+std::atomic<std::uint32_t> side_pool_base_addr{};
+std::atomic<std::uint64_t> side_pool_extent{};
+const char *side_pool_state = "not attempted";
 
 std::atomic<std::uint32_t> traced_hook_calls{};
 
@@ -308,12 +319,11 @@ auto read_main_pool(std::uint32_t &base_out, std::uint64_t &size_out, std::uint6
 // by signing out. A walk can therefore race a live allocation, so it is bounded at
 // both ends -- every block is screened, the count is capped, and anything
 // inconsistent abandons the sample rather than reporting it.
-auto walk_main_pool(BlockTally &tally, std::uint64_t &elapsed_us, bool &capped) -> bool
+auto walk_pool(const void *pool, BlockTally &tally, std::uint64_t &elapsed_us, bool &capped) -> bool
 {
     const auto started = now_us();
     capped = false;
 
-    const auto *pool = find_main_pool();
     if (pool == nullptr)
     {
         return false;
@@ -775,6 +785,225 @@ auto report_verification(const VerifyReport &report) -> void
 
 }
 
+namespace
+{
+
+// --- the side pool ---------------------------------------------------------
+
+using PoolCtorFn = void *(LYRIUM_THISCALL *)(void *, void *);
+using PoolRegisterFn = void *(LYRIUM_THISCALL *)(
+    void *, void *, std::int32_t, const wchar_t *, void *, std::uint32_t, std::int32_t, std::int32_t);
+// vtable slot 4. RET 0x10, so four stack arguments after `this`.
+using PoolAllocateFn = void *(LYRIUM_THISCALL *)(void *, void *, std::uint32_t, std::int32_t, std::int32_t, std::int32_t);
+// vtable slots 6 and 15. RET 4.
+using PoolFreeFn = void(LYRIUM_THISCALL *)(void *, void *, void *);
+using PoolContainsFn = char(LYRIUM_THISCALL *)(void *, void *, void *);
+
+auto vtable_slot(const void *object, std::size_t offset) -> void *
+{
+    auto table = std::uint32_t{};
+    auto entry = std::uint32_t{};
+    if (!read_engine_u32(object, 0u, table) || table == 0u)
+    {
+        return nullptr;
+    }
+    const auto *vtable = reinterpret_cast<const void *>(static_cast<std::uintptr_t>(table));
+    if (!read_engine_u32(vtable, offset, entry) || entry == 0u)
+    {
+        return nullptr;
+    }
+    return reinterpret_cast<void *>(static_cast<std::uintptr_t>(entry));
+}
+
+auto read_pool_fields(const void *pool, PoolFields &out) -> bool
+{
+    auto id = std::uint32_t{};
+    return read_engine_u32(pool, pool_id_offset, id) && read_engine_u32(pool, pool_base_offset, out.base) &&
+           read_engine_u32(pool, pool_aligned_offset, out.aligned) &&
+           read_engine_u32(pool, pool_size_offset, out.size) &&
+           read_engine_u32(pool, pool_usable_offset, out.usable) &&
+           read_engine_u32(pool, 0xE8u, out.align_log2) && read_engine_u32(pool, 0xECu, out.min_size) &&
+           read_engine_u32(pool, 0xF4u, out.fallback) && (out.id = static_cast<std::int32_t>(id), true);
+}
+
+// Allocate, prove the engine would resolve the block back to us, then free.
+//
+// The engine's global free walks all four slots calling Contains and takes the
+// first hit, so "exactly one pool claims it, and it is ours" is precisely the
+// question the real free path asks. Proving that is equivalent to calling the
+// global free, without needing a fourth verified address.
+auto probe_side_pool(void *pool, const void *manager, std::uint32_t arena_base, std::uint64_t arena_bytes) -> bool
+{
+    auto *allocate = reinterpret_cast<PoolAllocateFn>(vtable_slot(pool, pool_vtable_allocate));
+    auto *release = reinterpret_cast<PoolFreeFn>(vtable_slot(pool, pool_vtable_free));
+    if (allocate == nullptr || release == nullptr)
+    {
+        side_pool_state = "probe: vtable unreadable";
+        return false;
+    }
+
+    auto *block = allocate(pool, nullptr, 1024u * 1024u, 0x7fffffff, 0x7fffffff, -1);
+    if (block == nullptr)
+    {
+        side_pool_state = "probe: allocation refused";
+        return false;
+    }
+
+    const auto address = reinterpret_cast<std::uintptr_t>(block);
+    if (address < arena_base || address >= arena_base + arena_bytes)
+    {
+        // Deliberately leaked: a pointer we cannot place is a pointer we must not
+        // hand back to an allocator we no longer trust.
+        side_pool_state = "probe: block outside the arena";
+        return false;
+    }
+
+    auto claims = 0;
+    auto ours = false;
+    for (auto slot = std::size_t{0}; slot < manager_pool_slots; ++slot)
+    {
+        auto value = std::uint32_t{};
+        if (!read_engine_u32(manager, manager_pool_array_offset + slot * sizeof(std::uint32_t), value) || value == 0u)
+        {
+            continue;
+        }
+        auto *candidate = reinterpret_cast<void *>(static_cast<std::uintptr_t>(value));
+        auto *contains = reinterpret_cast<PoolContainsFn>(vtable_slot(candidate, pool_vtable_contains));
+        if (contains != nullptr && contains(candidate, nullptr, block) != 0)
+        {
+            ++claims;
+            ours = ours || candidate == pool;
+        }
+    }
+
+    release(pool, nullptr, block);
+
+    if (claims != 1 || !ours)
+    {
+        side_pool_state = "probe: ownership is ambiguous";
+        return false;
+    }
+    return true;
+}
+
+}
+
+auto create_side_pool() -> void
+{
+    if (config.side_pool_bytes == 0u)
+    {
+        side_pool_state = "disabled";
+        return;
+    }
+
+    // A wrong address here runs engine code against an object we fabricated, so
+    // these are verified before any of them is called -- the same read-only pass
+    // install_engine_hooks makes, on the rows that are never patched.
+    const auto delta = image_base_delta();
+    for (const auto id : {TargetId::pool_ctor, TargetId::pool_register, TargetId::pool_get_tag})
+    {
+        const auto report = InlineHook::verify_target(target(id), delta);
+        report_verification(report);
+        if (!report.ok())
+        {
+            side_pool_state = "engine build does not match the pool table";
+            return;
+        }
+    }
+
+    if (!hook_pool_alloc.installed())
+    {
+        side_pool_state = "pool_alloc is not hooked";
+        return;
+    }
+
+    auto manager_value = std::uint32_t{};
+    const auto *site = reinterpret_cast<const void *>(manager_pointer_site + static_cast<std::uintptr_t>(delta));
+    if (!read_engine_u32(site, 0u, manager_value) || manager_value == 0u)
+    {
+        side_pool_state = "engine has not built its pools yet";
+        return;
+    }
+    auto *manager = reinterpret_cast<void *>(static_cast<std::uintptr_t>(manager_value));
+
+    // Slot 2 must still hold the BlockPool the engine embedded there. Anything
+    // else means somebody got here first, and overwriting it would strand a live
+    // pool.
+    const auto slot_offset = manager_pool_array_offset + 2u * sizeof(std::uint32_t);
+    auto slot_value = std::uint32_t{};
+    if (!read_engine_u32(manager, slot_offset, slot_value) || slot_value != manager_value + 0x270u)
+    {
+        side_pool_state = "the free pool slot is already taken";
+        return;
+    }
+
+    const auto reservation = arena_reservation_bytes(config.side_pool_bytes);
+    auto *arena = ::VirtualAlloc(nullptr, reservation, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+    if (arena == nullptr)
+    {
+        side_pool_state = "could not reserve the arena";
+        return;
+    }
+    const auto arena_base = static_cast<std::uint32_t>(reinterpret_cast<std::uintptr_t>(arena));
+
+    // Static storage: there is exactly one of these and it must outlive every
+    // block handed out of it, which is the whole process. never_destroyed.h has
+    // the reasoning.
+    alignas(16) static std::uint8_t storage[pool_object_bytes]{};
+    auto *pool = static_cast<void *>(storage);
+
+    const auto ctor = reinterpret_cast<PoolCtorFn>(target(TargetId::pool_ctor).address + delta);
+    ctor(pool, nullptr);
+
+    auto *slot = reinterpret_cast<std::uint32_t *>(static_cast<std::uint8_t *>(manager) + slot_offset);
+    *slot = static_cast<std::uint32_t>(reinterpret_cast<std::uintptr_t>(pool));
+
+    const auto register_pool = reinterpret_cast<PoolRegisterFn>(target(TargetId::pool_register).address + delta);
+    register_pool(
+        pool,
+        nullptr,
+        side_pool_id,
+        L"lyrium",
+        arena,
+        static_cast<std::uint32_t>(config.side_pool_bytes),
+        static_cast<std::int32_t>(pool_default_align_log2),
+        0);
+
+    const auto decline = [&](const char *reason)
+    {
+        side_pool_state = reason;
+        *slot = manager_value + 0x270u;
+        ::VirtualFree(arena, 0, MEM_RELEASE);
+        log("side pool: declined, {}", reason);
+    };
+
+    auto fields = PoolFields{};
+    if (!read_pool_fields(pool, fields))
+    {
+        decline("could not read the pool back");
+        return;
+    }
+    if (!side_pool_is_attached(fields, arena_base, config.side_pool_bytes))
+    {
+        // The registrar always reports success, so this is where a failed attach
+        // is actually caught.
+        decline("the engine did not attach the arena");
+        return;
+    }
+    if (!probe_side_pool(pool, manager, fields.aligned, fields.usable))
+    {
+        decline(side_pool_state);
+        return;
+    }
+
+    side_pool_base_addr.store(fields.aligned, std::memory_order_relaxed);
+    side_pool_extent.store(fields.usable, std::memory_order_relaxed);
+    side_pool_state = "created";
+    side_pool.store(pool, std::memory_order_release);
+
+    log("side pool: created, base={:#010x} usable={} id={:#x}", fields.aligned, fields.usable, side_pool_id);
+}
+
 auto install_engine_hooks(const EngineConfig &configuration) -> void
 {
     config = configuration;
@@ -1037,12 +1266,32 @@ auto engine_state() -> EngineState
     state.main_pool_observed =
         read_main_pool(state.main_pool_base, state.main_pool_bytes, state.main_pool_usable_bytes);
 
+    state.side_pool_state = side_pool_state;
+    auto *side = side_pool.load(std::memory_order_acquire);
+    state.side_pool_created = side != nullptr;
+    if (state.side_pool_created)
+    {
+        state.side_pool_base = side_pool_base_addr.load(std::memory_order_relaxed);
+        state.side_pool_bytes = side_pool_extent.load(std::memory_order_relaxed);
+
+        auto tally = BlockTally{};
+        auto elapsed = std::uint64_t{};
+        auto capped = false;
+        if (walk_pool(side, tally, elapsed, capped) && !capped)
+        {
+            state.side_pool_blocks = tally.blocks;
+            state.side_pool_used_bytes = tally.used_bytes;
+            state.side_pool_free_bytes = tally.free_bytes;
+            state.side_pool_largest_free_bytes = tally.largest_free_bytes;
+        }
+    }
+
     if (state.main_pool_observed)
     {
         auto tally = BlockTally{};
         auto elapsed = std::uint64_t{};
         auto capped = false;
-        const auto finished = walk_main_pool(tally, elapsed, capped);
+        const auto finished = walk_pool(find_main_pool(), tally, elapsed, capped);
         state.main_pool_walk_us = elapsed;
         state.main_pool_walk_capped = capped;
         state.main_pool_blocks = tally.blocks;

@@ -20,6 +20,11 @@ struct EngineConfig
     // the entry point every engine allocation goes through, and this project has
     // already crashed the game twice by interposing an allocator on first contact.
     bool hook_pool{false};
+
+    // A second heap for large allocations, built from the engine's own parts and
+    // registered in the pool manager's free slot. Zero is off. A malformed number
+    // parses as zero, which is the safe direction and is why this is the default.
+    std::uint64_t side_pool_bytes{0};
 };
 
 // What the install gate decided. aborted means verification failed and the
@@ -35,6 +40,12 @@ struct InstallState
 };
 
 auto install_engine_hooks(const EngineConfig &config) -> void;
+
+// Builds a second heap from the engine's own constructor and registers it in the
+// pool manager's free slot. Call once, after install_engine_hooks and after the
+// engine has built its own pools. Declines and leaves the process untouched on any
+// doubt; the reason is in engine_state().side_pool_state either way.
+auto create_side_pool() -> void;
 auto engine_install_state() -> InstallState;
 
 // Read-only verification of every non-optional target. Safe from DllMain.
@@ -106,6 +117,18 @@ struct EngineState
     // pool's threshold and how large it has to be.
     SizeHistogram request_sizes;
     SizeHistogram main_pool_used_sizes;
+
+    // The side pool: whether it was created, and what it holds. created is false
+    // whenever the arming sequence declined, in which case the figures below mean
+    // nothing and lyrium is behaving exactly as it does without the feature.
+    bool side_pool_created;
+    const char *side_pool_state;
+    std::uint32_t side_pool_base;
+    std::uint64_t side_pool_bytes;
+    std::uint64_t side_pool_used_bytes;
+    std::uint64_t side_pool_free_bytes;
+    std::uint64_t side_pool_largest_free_bytes;
+    std::uint32_t side_pool_blocks;
 
     bool main_pool_walked;
     bool main_pool_walk_capped;

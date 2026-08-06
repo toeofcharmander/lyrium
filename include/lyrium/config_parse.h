@@ -127,6 +127,10 @@ inline auto apply_values(Config &config, const ConfigValues &values) -> void
     config.engine.hook_cache = parse_bool(lookup("cache_hooks"), true);
     config.engine.hook_allocator = parse_bool(lookup("allocator_hooks"), false);
     config.engine.hook_pool = parse_bool(lookup("pool_hooks"), false);
+    if (const auto value = lookup("side_pool_mb"); !value.empty())
+    {
+        config.engine.side_pool_bytes = std::strtoull(value.c_str(), nullptr, 10) * 1024ull * 1024ull;
+    }
 
     config.overlay = parse_bool(lookup("overlay"), false);
     config.allocation_watch = parse_bool(lookup("allocation_watch"), false);
