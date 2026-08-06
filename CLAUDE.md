@@ -251,7 +251,58 @@ request returns null without the allocator being consulted, so those are exclude
 from `failures` deliberately; counting them would put noise in the one number
 whose value is that any non-zero reading means something.
 
-The second, walking the block chain for used and largest-free, is not implemented.
+### Why main_pool_mb too small breaks the game
+
+Both are implemented, and together they answered it. Measured over two sessions on
+the same route through Denerim:
+
+| | 4 GB, pool 713 MB | 2 GB, pool 457 MB |
+|---|---|---|
+| `largest_free` floor | 246 MB | **17.5 MB** |
+| largest request the engine makes | 71.6 MB | 71.6 MB |
+| headroom against it | 3.4x | **0.24x -- cannot fit** |
+| pool alloc failures | 0 | 0 |
+| texture create failures | 0 | 0 |
+| address-space headroom at end | 2.1 GB | 219 MB, rescue never armed |
+| outcome | played fine | missing NPCs, no cutscene, crash |
+
+The pool fragments monotonically and never recovers. In one session `largest_free`
+went 699.8 -> 246.6 MB while `used` fell from 424 MB back to 94 MB: the engine
+handed back 330 MB and the largest hole did not grow. It is a boundary-tag free
+list with coalescing, not a partitioned arena, and block counts reach 1.4 million.
+
+At 713 MB that ratchet never gets low enough to matter. At 457 MB it crosses the
+engine's own largest allocation size, and from that point the engine **skips assets
+it cannot fit rather than asking for them** -- which is why `failures` stays at zero
+through the whole failure, and why no counter of refusals could ever have detected
+this. The crash that follows lands inside a bulk-copy routine, consistent with
+copying into memory that was never obtained.
+
+So the criterion for `main_pool_mb` is not a number in a table: **`largest_free`
+must stay above the largest single request, ~72 MB, with margin.** That is now
+visible in the log, which is what the section above says it never was.
+
+Two things this rules out. Address-space fragmentation is not the mechanism here --
+219 MB of headroom remained and the rescue never armed. And texture eviction is not
+a lever on it: evictions climbed 0 -> 414 while pool `used` climbed 13 -> 399 MB.
+The pool and the texture set are separate arenas, 399 MB against 462 MB.
+
+### The fix that is not yet reachable
+
+`FUN_004b8da0` builds **four** pools, not two. `StreamingMain` (id 2) and
+`StreamingGPU` (id 3) are fully named and wired, and carry size 0, so
+`if (dwBytes != 0)` skips them. Separating the churning allocation class from the
+long-lived one is the standard remedy for this exact ratchet, and the engine
+already does it once, for `Strings`.
+
+Giving them a size alone would achieve nothing. `FUN_004b8af0` picks an
+allocation's pool from a **per-thread stack of tags** (`fs:[0x2c]`, `_tls_index`,
+depth at `+0x88`, entries from `+4`), defaulting to 0 when the stack is empty.
+Nothing ever pushes 2 or 3 -- if it did, the lookup would return null and
+`FUN_004b92c0` would return null, and we measured zero failures across 11.9 million
+allocations. So the routing has to be patched too, which means finding the push/pop
+pair and identifying the streaming call sites. That is a code cave and real
+behavioural risk, not a byte edit.
 
 `policy/`-style arithmetic for this lives in `dao/pool_budget.h`, which names no
 Windows type and is tested by `pool_budget_test.cpp`.

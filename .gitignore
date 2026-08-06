@@ -52,6 +52,12 @@ dist/
 
 __pycache__/
 
+# Working copies of daorigins.exe and their backups, kept out of the install so a
+# build can be inspected or patched without touching the one the game loads. Not
+# ours to redistribute, and large.
+/2gb/
+/4gb/
+
 # Ghidra project and everything generated from DAOrigins.exe. The scripts that
 # produce it are committed under tools/ghidra/; their output is not. It is bulky,
 # it is regenerable from the exe by anyone who owns the game, and it is derived
