@@ -1,7 +1,7 @@
 # lyrium
 
-A proxy `d3d9.dll` for Dragon Age: Origins that stops the address-space
-exhaustion behind late-session texture flickering and crashes.
+A proxy `d3d9.dll` for Dragon Age: Origins that stops the memory exhaustion behind
+late-session texture flickering, missing scenery, and crashes.
 
 ## Credits
 
@@ -11,82 +11,135 @@ exhaustion behind late-session texture flickering and crashes.
   The implementation this is forked from. Texture relocation and the startup pool
   patch are both his.
 
-## What it does
-
-The game is 32-bit, so it has 2 GB of address space (4 GB with the LAA patch).
-Managed textures keep a full CPU-side copy in it, and each copy over 508 KB
-becomes its own reservation; they turn over constantly at varying sizes, so the
-free space is re-cut every cycle until no unbroken block is left for the next
-texture. Separately, the engine reserves 850 MB for itself at launch and does not
-need all of it.
-
-lyrium creates eligible textures in `D3DPOOL_DEFAULT`, which has no CPU-side
-copy, and hands the engine a temporary pagefile-backed buffer when it locks one.
-It can also shrink the engine's startup pool. A bounded eviction path is there as
-a backstop and does not fire on a correctly configured install.
-
 ## Installing
 
-Drop `d3d9.dll` next to `DAOrigins.exe`, in `bin_ship`. Optionally add
-`lyrium.ini` beside it:
+Drop `d3d9.dll` next to `DAOrigins.exe`, in `bin_ship`, and put a `lyrium.ini`
+beside it. **Use the block that matches your executable.**
 
-```
+If you have run a 4 GB patcher on `DAOrigins.exe`:
+
+```ini
 [lyrium]
-overlay=1
-logging=1
-main_pool_mb=768
+side_pool_mb=512
 ```
 
-`overlay` toggles a panel on Shift+F12, `logging` writes to `lyrium_logs/`. Both
-are off by default. `include/lyrium/config.h` has every key.
+If you have not (a stock 2 GB executable):
+
+```ini
+[lyrium]
+main_pool_mb=768
+side_pool_mb=288
+```
+
+You do not need to work out which is which beyond that — everything else adapts on
+its own. `include/lyrium/config_parse.h` lists every key.
 
 **Run in borderless windowed mode.** Alt-tabbing out of fullscreen makes the game
-rebuild the Direct3D device, and it has a long-standing crash in that path that
-has nothing to do with memory. A borderless window never loses the device.
+rebuild the Direct3D device, and it has a long-standing crash in that path with
+nothing to do with memory. A borderless window never loses the device.
 
 If the game does not start, launch `bin_ship\DAOrigins.exe` directly rather than
 through the launcher — `DAOriginsConfig.exe` crashes on modern hardware for
-reasons unrelated to this mod, and it stops the chain before the game runs.
+unrelated reasons and stops the chain before the game runs.
 
-## main_pool_mb
+Optional: `overlay=1` gives a panel on Shift+F12, `logging=1` writes to
+`lyrium_logs/`.
 
-Hands part of the engine's 850 MB startup pool back to the address space. Off by
-default; the right value depends on your mod load.
+## What goes wrong, and where
 
-The number is a budget covering two allocations, not the size of one. The engine
-takes a fixed 55 MB off the top for a separate string pool and asks for the rest as
-its main pool, so `main_pool_mb=768` gives a 713 MB main pool. If that request will
-not fit it retries 1 MB smaller until it does, so the pool can end up smaller than
-you asked for without saying so.
+The game is 32-bit, so it has 2 GB of address space (4 GB with the LAA patch).
+**Two different things fragment, at two different levels**, and either one alone
+will break a session.
 
-Measured on a heavily modded 2 GB install — largest unbroken free block during
-play:
+```
+LEVEL 1 — the address space
+┌──────────────────────────────────────────────────────────────────────┐
+│ exe │ dlls │ Strings │   MAIN POOL   │  SIDE POOL  │ textures │ free  │
+└──────────────────────────────────────────────────────────────────────┘
+                            │
+                            │  the pool is one single reservation.
+                            │  Windows never looks inside it.
+                            ▼
+LEVEL 2 — inside the main pool
+      ┌────────────────────────────────────────────┐
+      │▓▓▓ ▓ ▓▓▓░░░░░░░░░░░░░░░░░▓▓░░░░░░░▓ ▓▓░░░░│
+      └────────────────────────────────────────────┘
+       ▓ = ~1.4 million small blocks that never move
+```
 
-| `main_pool_mb` | largest free block |
-|---|---|
-| unset (850) | 2.4 MB |
-| 800 | 46 MB |
-| 768 | 110 MB |
-| 704 | 78 MB |
-| 512 | engine starves |
+**Level 1** is chewed up by managed textures. Each keeps a full CPU-side copy in
+the address space, and every copy over 508 KB becomes its own reservation. They
+turn over constantly at varying sizes until no unbroken block is left.
 
-Start at 768. Below 704 there is nothing left to gain.
+**Level 2** is chewed up by the engine's own long-lived small allocations. They sit
+scattered through the pool like pillars, and the largest unbroken gap only ever
+shrinks — one measured session handed back 330 MB without the biggest gap growing
+by a single byte.
 
-| symptom | meaning |
-|---|---|
-| flickering, out-of-memory crashes in long sessions | too high — try 704 |
-| missing scenery or characters, hang during a level load | too low — raise it |
+The engine periodically needs **71.6 MB in one unbroken piece**. When that no
+longer fits, it does not fail and does not complain — it silently skips loading the
+asset. That is the empty Denerim market and the cutscene that never fires, and it
+is invisible to every error counter because nothing was ever attempted.
 
-The second one is silent: the engine skips whatever did not fit and carries on,
-so you get a running game with holes in it rather than an error.
+## What lyrium does
 
-`main_pool_mb=0` restores the stock pool. The patch verifies the exact
-instruction and its original value before writing, and declines on a game build
-it does not recognise — as do all the engine hooks, which are checked against
-recorded prologues and SHA-256 hashes.
+**For level 1** it creates eligible textures in `D3DPOOL_DEFAULT`, which has no
+CPU-side copy, and hands the engine a temporary pagefile-backed buffer when it
+locks one. The duplicate is never made rather than cleaned up afterwards.
 
-On a 4 GB (LAA) install this matters much less; there is a second 2 GB above the
-line to fall back on.
+**For level 2** it builds a second heap — using the engine's own allocator class,
+registered in a slot the engine leaves empty — and routes every allocation of 1 MB
+or more into it.
+
+```mermaid
+flowchart TD
+    A["engine asks for N bytes"] --> B{"N ≥ 1 MB?"}
+    B -- no --> C["main pool<br/>(fragments freely, nothing big lives here)"]
+    B -- yes --> D{"already tagged for<br/>a specific pool?"}
+    D -- yes --> C
+    D -- no --> E{"side pool<br/>has room?"}
+    E -- yes --> F["side pool<br/>(few large blocks, so they merge back)"]
+    E -- no --> C
+```
+
+This does **not** stop the main pool fragmenting — it fragments exactly as much as
+before. It stops that mattering, because the only thing that needed a big unbroken
+run no longer lives there. Measured on a 2 GB image, same route, same total memory:
+
+| | without the side pool | with it |
+|---|---|---|
+| largest unbroken gap in the main pool | 73 MB | 209 MB |
+| largest single thing it must still fit | 71.6 MB | under 1 MB |
+| margin | **1.02×** | **~209×** |
+
+A bounded eviction path also exists as a backstop; it does not fire on a correctly
+configured install.
+
+## Sizing
+
+The numbers above are for a 2 GB executable, where every megabyte is contested:
+
+```
+strings  55 MB   fixed, the engine's own, cannot be changed
+main    425 MB   needs capacity only  (peak use measured at 307 MB)
+side    288 MB   needs capacity AND a 71.6 MB clear run
+        ───────
+        768 MB   total, proven; 960 MB froze during a map load
+```
+
+On a 4 GB executable there is a second 2 GB that no session has ever touched, so
+the side pool is free — it is added without shrinking anything, and 512 MB gives
+plenty of room for heavy texture mod loads. A 1969 MB configuration has been run
+clean.
+
+`main_pool_mb` is a **budget**, not a pool size: the engine takes a fixed 55 MB off
+the top for its string pool and asks for the rest. If that request will not fit it
+retries 1 MB smaller until it does, so the pool can quietly end up smaller than you
+asked for. The mod reports what it actually got.
+
+You should not need to tune any of this. If you do, `overlay=1` shows the largest
+clear run in each of the three arenas against what each must still fit, which is
+the only number that decides whether content gets dropped.
 
 ## Building
 
