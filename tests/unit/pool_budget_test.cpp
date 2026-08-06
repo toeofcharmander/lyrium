@@ -141,3 +141,25 @@ TEST(PoolBudget, ASubtractionThatWouldStarveTheMainPoolDropsTheSidePoolInstead)
     EXPECT_EQ(split.side_bytes, 0u);
     EXPECT_EQ(split.budget_bytes, 400u * mb);
 }
+
+TEST(PoolBudget, ABudgetTooLargeForATwoGigImageIsClampedToWhatFits)
+{
+    // Shipping one ini for both images means the 4 GB figures will land on a 2 GB
+    // one. Dropping the side pool and leaving a 1024 MB budget puts more pools in
+    // a 2 GB address space than the 960 MB that froze during a map load, so the
+    // whole plan has to be replaced rather than half of it discarded.
+    const auto split = lyrium::dao::plan_pool_split(1024u * mb, 945u * mb, false);
+
+    EXPECT_LE(split.budget_bytes + split.side_bytes, lyrium::dao::max_non_laa_pool_bytes);
+    EXPECT_GT(split.side_bytes, 0u);
+    EXPECT_GE(lyrium::dao::expected_main_pool_bytes(split.budget_bytes),
+              lyrium::dao::minimum_main_pool_bytes);
+}
+
+TEST(PoolBudget, AFourGigImageIsNotClamped)
+{
+    const auto split = lyrium::dao::plan_pool_split(1024u * mb, 945u * mb, true);
+
+    EXPECT_EQ(split.budget_bytes, 1024u * mb);
+    EXPECT_EQ(split.side_bytes, 945u * mb);
+}

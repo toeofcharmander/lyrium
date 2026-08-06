@@ -46,6 +46,14 @@ inline constexpr auto main_pool_backoff_step_bytes = std::uint64_t{0x100000};
 // the working set -- measured at 306 MB peak with a side pool taking the rest.
 inline constexpr auto minimum_main_pool_bytes = std::uint64_t{320} * 1024 * 1024;
 
+// The most pool a 2 GB image can carry. 768 MB has run clean repeatedly; 960 MB
+// froze during a map load. Nothing above this is offered, whatever the ini says,
+// because the failure is a hang with every counter reading healthy.
+inline constexpr auto max_non_laa_pool_bytes = std::uint64_t{768} * 1024 * 1024;
+
+// The split that fits under that ceiling, measured rather than derived.
+inline constexpr auto non_laa_side_bytes = std::uint64_t{288} * 1024 * 1024;
+
 struct PoolSplit
 {
     std::uint32_t budget_bytes;
@@ -78,6 +86,20 @@ struct PoolSplit
     {
         return PoolSplit{static_cast<std::uint32_t>(configured_budget_bytes), side_bytes, "additive, image is 4 GB"};
     }
+    // One ini has to serve both images, so the 4 GB figures will arrive here. Half
+    // a plan is worse than either whole one: dropping the side pool and keeping a
+    // 1024 MB budget puts more pools in a 2 GB space than the 960 MB that froze.
+    // Replace the whole plan with the one that has run clean.
+    if (configured_budget_bytes > max_non_laa_pool_bytes)
+    {
+        return PoolSplit{
+            static_cast<std::uint32_t>(max_non_laa_pool_bytes - non_laa_side_bytes),
+            non_laa_side_bytes,
+            "clamped to what a 2 GB image can carry"};
+    }
+
+    // A deliberately small budget is honoured rather than clamped upward; only the
+    // side pool gives way, since degrading to today's behaviour is always safe.
     if (configured_budget_bytes < side_bytes ||
         expected_main_pool_bytes(configured_budget_bytes - side_bytes) < minimum_main_pool_bytes)
     {

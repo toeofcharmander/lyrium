@@ -14,26 +14,21 @@ late-session texture flickering, missing scenery, and crashes.
 ## Installing
 
 Drop `d3d9.dll` next to `DAOrigins.exe`, in `bin_ship`, and put a `lyrium.ini`
-beside it. **Use the block that matches your executable.**
-
-If you have run a 4 GB patcher on `DAOrigins.exe`:
+beside it:
 
 ```ini
 [lyrium]
 main_pool_mb=1024
 side_pool_mb=945
+overlay=1
+logging=1
 ```
 
-If you have not (a stock 2 GB executable):
-
-```ini
-[lyrium]
-main_pool_mb=768
-side_pool_mb=288
-```
-
-You do not need to work out which is which beyond that — everything else adapts on
-its own. `include/lyrium/config_parse.h` lists every key.
+The same file works whether or not you have run a 4 GB patcher. lyrium reads the
+LAA flag out of the executable's header: on a 4 GB image the side pool is added on
+top of the budget, and on a stock 2 GB one the figures are clamped to a
+configuration that fits (768 MB of pools, split 425/288). You do not have to know
+which you have. `include/lyrium/config_parse.h` lists every key.
 
 **Run in borderless windowed mode.** Alt-tabbing out of fullscreen makes the game
 rebuild the Direct3D device, and it has a long-standing crash in that path with
