@@ -289,6 +289,19 @@ an allocation above the 2 GB line -- `largest_free` fell to 1,155,137,536 and th
 side pool landed at `0x7ffffff0`. The cost is ~1.9 GB of committed memory, most of
 it never touched.
 
+Note that `largest_free` is constant *within* a session -- it drops once when the
+pools are placed and then does not move, because nothing else ever allocates above
+the line. A figure that never changes is not evidence that the upper half heals; it
+is evidence that nothing touches it.
+
+The pool that demonstrably heals is the side pool. On the 945 MB configuration its
+largest run went 944.9 -> 803.9 -> 850.4 MB across a session while used rose to 131
+MB and fell back to 74 MB, and on the 288 MB configuration 62 -> 63.6 -> 97.4 MB.
+Few large blocks mean a freed block's neighbours are usually free too, so they
+merge. The main pool never does this: over the same session it went 955.9 -> 768.2
+-> 692.6 -> 679.7 MB, and one earlier session gave back 330 MB without the largest
+gap growing by a byte.
+
 ## Running it
 
 Launch `bin_ship\DAOrigins.exe` directly. The launcher chain runs

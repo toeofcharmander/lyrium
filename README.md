@@ -103,6 +103,11 @@ flowchart TD
     E -- no --> C
 ```
 
+The side pool recovers where the main pool cannot: its largest run has been
+measured going 944.9 -> 803.9 -> 850.4 MB across a session, and 62 -> 97.4 MB on a
+smaller arena. With tens of blocks rather than a million, a freed block's
+neighbours are usually free too, so they merge back.
+
 This does **not** stop the main pool fragmenting — it fragments exactly as much as
 before. It stops that mattering, because the only thing that needed a big unbroken
 run no longer lives there. Measured on a 2 GB image, same route, same total memory:
