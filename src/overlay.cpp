@@ -13,6 +13,8 @@
 #include "lyrium/allocators/imgui_allocator.h"
 #include "lyrium/containers/vector.h"
 #include "lyrium/dao/engine_hooks.h"
+#include "lyrium/diag/process_info.h"
+#include "lyrium/diag/va_region.h"
 #include "lyrium/diag/sampler.h"
 #include "lyrium/rescue_access.h"
 #include "lyrium/stats.h"
@@ -97,6 +99,17 @@ auto apply_style() -> void
 // How hot the panel runs, 0 healthy to 1 critical, from the headroom that
 // actually moves. Everything visual is derived from this one number so the whole
 // panel brightens together rather than in pieces.
+// Which of the two figures actually binds. On a large-address-aware image the
+// space above the 2 GB line is untouched, so below2g falls to tens of megabytes
+// while nothing is remotely short -- reporting it there reads as an emergency
+// during a session with 2 GB free. diag::headroom_bytes owns this decision and
+// the rescue already measures against it; the panel must not disagree.
+auto binding_headroom(const diag::FreeSpaceSnapshot &snapshot) -> std::uint64_t
+{
+    static const auto laa = diag::read_image_flags().large_address_aware;
+    return diag::headroom_bytes(snapshot.largest_free, snapshot.largest_free_below_2g, laa);
+}
+
 auto heat_from(std::uint64_t headroom_bytes) -> float
 {
     constexpr auto comfortable = 384.0f; // MB, well clear of any threshold
@@ -289,9 +302,16 @@ auto draw_headroom() -> void
 
     if (diag::Sampler::instance().try_snapshot(snapshot))
     {
-        const auto clear =
-            snapshot.largest_free_below_2g != 0u ? snapshot.largest_free_below_2g : snapshot.largest_free;
+        const auto clear = binding_headroom(snapshot);
         draw_headroom_row("address", clear, 0u, snapshot.total_free != 0u ? snapshot.total_free : clear);
+
+        // Informative but not binding on a 4 GB image, and alarming if mistaken
+        // for the headroom, so it is named rather than left as a bare figure.
+        if (clear != snapshot.largest_free_below_2g)
+        {
+            ::ImGui::TextDisabled(
+                "%12s below the 2 GB line: %.0f MB", "", static_cast<double>(megabytes(snapshot.largest_free_below_2g)));
+        }
     }
 
     if (engine.main_pool_observed)
@@ -322,7 +342,7 @@ auto draw_summary() -> void
     // The block below the 2 GB line, not the overall largest. On a
     // large-address-aware install the overall figure sits near 2 GB and never
     // moves, which is why the old graph showed nothing.
-    const auto headroom = snapshot.largest_free_below_2g != 0u ? snapshot.largest_free_below_2g : snapshot.largest_free;
+    const auto headroom = binding_headroom(snapshot);
     const auto heat = heat_from(headroom);
     const auto colour = heat_colour(heat);
 
