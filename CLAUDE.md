@@ -235,9 +235,26 @@ never had:
   the pool's own lock at `this+0x100`, so it belongs on the sampler thread with the
   address-space walk, never on the create path.
 
-Neither is implemented. The addresses above are read from the binary but are not
-in `dao/targets.h` and carry no recorded prologue or hash yet, so nothing may hook
-them until they go through the same verification every other target does.
+The first is implemented, behind `pool_hooks=1`, which is **off by default**:
+`pool_alloc` sits on the entry point every engine allocation goes through, and
+this project has already crashed the game twice by interposing on an allocator at
+first contact. `pool_alloc` and `pool_register` are rows in `dao/targets.h` like
+any other target, and like the CRT rows they are skipped by
+`targets_verify_clean()` so an opt-in hook can never veto the pool patch.
+
+With it on, the stats block gains a `pool[...]` line: `main=` is what the pool
+ended up with, `expected=` what the patched budget asked for, `shortfall=` the gap
+the back-off loop walked down, and `failures=` the count that has never existed
+before — non-zero only when the engine's own pool could not satisfy a request,
+which is what `main_pool_mb` set too low looks like from the inside. A zero-size
+request returns null without the allocator being consulted, so those are excluded
+from `failures` deliberately; counting them would put noise in the one number
+whose value is that any non-zero reading means something.
+
+The second, walking the block chain for used and largest-free, is not implemented.
+
+`policy/`-style arithmetic for this lives in `dao/pool_budget.h`, which names no
+Windows type and is tested by `pool_budget_test.cpp`.
 
 ## main_pool_mb
 

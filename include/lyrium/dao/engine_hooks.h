@@ -13,6 +13,11 @@ struct EngineConfig
 
     bool hook_allocator{false};
     std::size_t allocation_log_threshold{256u * 1024u};
+
+    // The engine's own pool allocator. Off by default because pool_alloc sits on
+    // the entry point every engine allocation goes through, and this project has
+    // already crashed the game twice by interposing an allocator on first contact.
+    bool hook_pool{false};
 };
 
 // What the install gate decided. aborted means verification failed and the
@@ -69,6 +74,20 @@ struct EngineState
     std::uint64_t realloc_calls;
     std::uint64_t malloc_total_bytes;
     std::uint64_t malloc_largest;
+
+    // The engine's own pool. pool_alloc_failures is the figure the log has never
+    // had: the engine allocates decoded asset data from its pool long before it
+    // reaches D3D, so a pool set too small starves it without ever producing an
+    // E_OUTOFMEMORY or a failed texture create.
+    std::uint64_t pool_allocs;
+    std::uint64_t pool_alloc_failures;
+    std::uint64_t pool_alloc_largest_bytes;
+    std::uint64_t pool_registrations;
+
+    // Size the engine registered for "Main Pool", which is what survived its
+    // back-off loop rather than what it asked for. Zero until it registers.
+    const void *main_pool_base;
+    std::uint64_t main_pool_bytes;
 };
 
 auto engine_state() -> EngineState;

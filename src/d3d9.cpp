@@ -15,6 +15,7 @@
 #include "lyrium/config.h"
 #include "lyrium/containers/unordered_map.h"
 #include "lyrium/dao/engine_hooks.h"
+#include "lyrium/dao/pool_budget.h"
 #include "lyrium/dao/pool_patch.h"
 #include "lyrium/diag/alloc_watch.h"
 #include "lyrium/diag/import_probe.h"
@@ -230,6 +231,33 @@ auto log_ledger_snapshot(std::string_view reason, const lyrium::diag::VaStats &)
             engine.texture_loads,
             engine.evictions,
             engine.evicted_textures);
+
+        // The gauge the paragraph above says does not exist. failures is non-zero
+        // only when the engine's own pool could not satisfy a request, which is
+        // what a main_pool_mb set too low actually looks like from the inside.
+        // main is what the pool ended up with after the engine's back-off loop,
+        // and expected is what the patched budget asked for; a gap between them
+        // means the address space could not hand over the whole request.
+        if (engine.pool_registrations != 0u || engine.pool_allocs != 0u)
+        {
+            const auto budget = pool_patch_result.applied ? pool_patch_result.patched_bytes
+                                : pool_patch_result.original_bytes != 0u
+                                    ? pool_patch_result.original_bytes
+                                    : static_cast<std::uint32_t>(lyrium::dao::stock_budget_bytes);
+            const auto outcome = lyrium::dao::evaluate_main_pool(budget, engine.main_pool_bytes);
+            lyrium::log(
+                "pool[{}]: pools={} main={} expected={} shortfall={} backed_off={} allocs={} failures={} "
+                "largest={}",
+                reason,
+                engine.pool_registrations,
+                outcome.actual_bytes,
+                outcome.expected_bytes,
+                outcome.shortfall_bytes,
+                outcome.backed_off,
+                engine.pool_allocs,
+                engine.pool_alloc_failures,
+                engine.pool_alloc_largest_bytes);
+        }
     }
 
     const auto rescue = rescue_coordinator().stats();

@@ -45,6 +45,7 @@ lyrium_add_test(texture_size_test NEEDS_D3D9_SHIM SOURCES unit/texture_size_test
 lyrium_add_test(block_rect_test SOURCES unit/block_rect_test.cpp)
 lyrium_add_test(mip_layout_test SOURCES unit/mip_layout_test.cpp)
 lyrium_add_test(config_parse_test SOURCES unit/config_parse_test.cpp)
+lyrium_add_test(pool_budget_test SOURCES unit/pool_budget_test.cpp)
 lyrium_add_test(va_region_test SOURCES unit/va_region_test.cpp)
 lyrium_add_test(free_size_classes_test SOURCES unit/free_size_classes_test.cpp)
 lyrium_add_test(alloc_attribution_test SOURCES unit/alloc_attribution_test.cpp)

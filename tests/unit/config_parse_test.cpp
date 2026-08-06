@@ -128,3 +128,12 @@ TEST(ConfigParse, OverlayDefaultDisagreesBetweenTheStructAndTheParser)
     EXPECT_TRUE(Config{}.overlay) << "the struct declares overlay on by default";
     EXPECT_FALSE(configured("").overlay) << "but an absent key turns it off";
 }
+
+TEST(ConfigParse, PoolHooksAreOffUnlessAskedFor)
+{
+    // pool_alloc sits on the entry point every engine allocation goes through, so
+    // this one has to be opted into rather than merely not opted out of.
+    EXPECT_FALSE(configured("").engine.hook_pool);
+    EXPECT_FALSE(configured("pool_hooks=0").engine.hook_pool);
+    EXPECT_TRUE(configured("pool_hooks=1").engine.hook_pool);
+}

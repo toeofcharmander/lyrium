@@ -126,6 +126,7 @@ inline auto apply_values(Config &config, const ConfigValues &values) -> void
     config.engine.hook_texture_paths = parse_bool(lookup("engine_hooks"), true);
     config.engine.hook_cache = parse_bool(lookup("cache_hooks"), true);
     config.engine.hook_allocator = parse_bool(lookup("allocator_hooks"), false);
+    config.engine.hook_pool = parse_bool(lookup("pool_hooks"), false);
 
     config.overlay = parse_bool(lookup("overlay"), false);
     config.allocation_watch = parse_bool(lookup("allocation_watch"), false);

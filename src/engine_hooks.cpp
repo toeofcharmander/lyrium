@@ -54,6 +54,20 @@ using MallocFn = void *(LYRIUM_CDECL *)(std::size_t);
 using FreeFn = void(LYRIUM_CDECL *)(void *);
 using ReallocFn = void *(LYRIUM_CDECL *)(void *, std::size_t);
 
+// The engine's own pool allocator. pool_alloc is __cdecl -- all three of its return
+// paths are a bare RET -- while pool_register is __thiscall with six stack
+// arguments, which its RET 0x18 states outright.
+using PoolAllocFn = void *(LYRIUM_CDECL *)(std::uint32_t, std::int32_t);
+using PoolRegisterFn = void *(LYRIUM_THISCALL *)(
+    void *,
+    void *,
+    std::int32_t,
+    const wchar_t *,
+    void *,
+    std::uint32_t,
+    std::int32_t,
+    std::int32_t);
+
 auto config = EngineConfig{};
 
 auto hook_load_texture_file = InlineHook{};
@@ -69,6 +83,8 @@ auto hook_clear = InlineHook{};
 auto hook_malloc = InlineHook{};
 auto hook_free = InlineHook{};
 auto hook_realloc = InlineHook{};
+auto hook_pool_alloc = InlineHook{};
+auto hook_pool_register = InlineHook{};
 
 std::atomic<const void *> texture_cache_ptr{nullptr};
 
@@ -87,6 +103,13 @@ std::atomic<std::uint64_t> counter_free_calls{};
 std::atomic<std::uint64_t> counter_realloc_calls{};
 std::atomic<std::uint64_t> counter_malloc_total_bytes{};
 std::atomic<std::uint64_t> counter_malloc_largest{};
+
+std::atomic<std::uint64_t> counter_pool_allocs{};
+std::atomic<std::uint64_t> counter_pool_alloc_failures{};
+std::atomic<std::uint64_t> counter_pool_alloc_largest{};
+std::atomic<std::uint64_t> counter_pool_registrations{};
+std::atomic<const void *> main_pool_base_ptr{nullptr};
+std::atomic<std::uint64_t> main_pool_size_bytes{};
 
 std::atomic<std::uint32_t> traced_hook_calls{};
 
@@ -505,6 +528,74 @@ LYRIUM_CDECL auto realloc_detour(void *pointer, std::size_t size) -> void *
     return result;
 }
 
+// Deliberately without a ReentryGuard. This sits on the entry point every engine
+// allocation goes through, the body below calls nothing that could re-enter a
+// lyrium hook, and a thread_local read and write per allocation is a real cost on
+// the hottest path in the process.
+LYRIUM_CDECL auto pool_alloc_detour(std::uint32_t size, std::int32_t tag) -> void *
+{
+    const auto trace = FirstCallTrace{1u << 13u, "engine pool_alloc: enter", "engine pool_alloc: returned"};
+
+    const auto original = reinterpret_cast<PoolAllocFn>(hook_pool_alloc.trampoline());
+    auto *result = original(size, tag);
+
+    counter_pool_allocs.fetch_add(1u, std::memory_order_relaxed);
+
+    // A zero-size request returns null without the allocator ever being asked, so
+    // counting it would put noise into the one counter whose whole value is that a
+    // non-zero reading means the pool is exhausted.
+    if (size != 0u)
+    {
+        if (result == nullptr)
+        {
+            counter_pool_alloc_failures.fetch_add(1u, std::memory_order_relaxed);
+        }
+
+        auto largest = counter_pool_alloc_largest.load(std::memory_order_relaxed);
+        while (size > largest &&
+               !counter_pool_alloc_largest.compare_exchange_weak(largest, size, std::memory_order_relaxed))
+        {
+        }
+    }
+
+    return result;
+}
+
+LYRIUM_THISCALL auto pool_register_detour(
+    void *self,
+    void *edx,
+    std::int32_t id,
+    const wchar_t *name,
+    void *base,
+    std::uint32_t size,
+    std::int32_t flags,
+    std::int32_t unused) -> void *
+{
+    const auto trace = FirstCallTrace{1u << 14u, "engine pool_register: enter", "engine pool_register: returned"};
+    const auto guard = ReentryGuard{};
+
+    const auto original = reinterpret_cast<PoolRegisterFn>(hook_pool_register.trampoline());
+    auto *result = original(self, edx, id, name, base, size, flags, unused);
+
+    // The registrar rejects the pool unless name, base and size are all set, so a
+    // null result means nothing was recorded and neither should we.
+    if (result != nullptr)
+    {
+        counter_pool_registrations.fetch_add(1u, std::memory_order_relaxed);
+
+        // Pool 0 is "Main Pool" -- the id the engine's own fallback path looks up
+        // when an allocation against any other pool fails. The size here is what
+        // survived the back-off loop, not what was asked for.
+        if (id == 0)
+        {
+            main_pool_base_ptr.store(base, std::memory_order_relaxed);
+            main_pool_size_bytes.store(size, std::memory_order_relaxed);
+        }
+    }
+
+    return result;
+}
+
 InstallState install_state{};
 
 struct Planned
@@ -616,6 +707,13 @@ auto install_engine_hooks(const EngineConfig &configuration) -> void
         planned.push_back({&hook_realloc, TargetId::crt_realloc, reinterpret_cast<void *>(&realloc_detour)});
     }
 
+    if (config.hook_pool)
+    {
+        planned.push_back({&hook_pool_alloc, TargetId::pool_alloc, reinterpret_cast<void *>(&pool_alloc_detour)});
+        planned.push_back(
+            {&hook_pool_register, TargetId::pool_register, reinterpret_cast<void *>(&pool_register_detour)});
+    }
+
     const auto delta = image_base_delta();
 
     // Pass one: read only. Not a single byte of the process is modified here.
@@ -675,10 +773,11 @@ auto targets_verify_clean() -> bool
     for (std::size_t i = 0u; i < static_cast<std::size_t>(TargetId::count); ++i)
     {
         const auto id = static_cast<TargetId>(i);
-        if (id == TargetId::crt_malloc || id == TargetId::crt_free || id == TargetId::crt_realloc)
+        if (id == TargetId::crt_malloc || id == TargetId::crt_free || id == TargetId::crt_realloc ||
+            id == TargetId::pool_alloc || id == TargetId::pool_register)
         {
-            // Allocator hooks are opt-in and off by default, so a mismatch there
-            // must not veto everything else.
+            // Allocator and pool hooks are opt-in and off by default, so a mismatch
+            // there must not veto everything else.
             continue;
         }
         if (!InlineHook::verify_target(target(id), delta).ok())
@@ -710,6 +809,8 @@ auto remove_engine_hooks() -> void
         &hook_create_volume_from_memory,
         &hook_evict,
         &hook_clear,
+        &hook_pool_alloc,
+        &hook_pool_register,
     };
 
     for (auto *hook : all)
@@ -800,6 +901,14 @@ auto engine_state() -> EngineState
     state.realloc_calls = counter_realloc_calls.load(std::memory_order_relaxed);
     state.malloc_total_bytes = counter_malloc_total_bytes.load(std::memory_order_relaxed);
     state.malloc_largest = counter_malloc_largest.load(std::memory_order_relaxed);
+
+    state.pool_allocs = counter_pool_allocs.load(std::memory_order_relaxed);
+    state.pool_alloc_failures = counter_pool_alloc_failures.load(std::memory_order_relaxed);
+    state.pool_alloc_largest_bytes = counter_pool_alloc_largest.load(std::memory_order_relaxed);
+    state.pool_registrations = counter_pool_registrations.load(std::memory_order_relaxed);
+    state.main_pool_base = main_pool_base_ptr.load(std::memory_order_relaxed);
+    state.main_pool_bytes = main_pool_size_bytes.load(std::memory_order_relaxed);
+
     state.large_allocation_bytes_live = live_allocation_bytes.load(std::memory_order_relaxed);
     {
         auto lock = std::scoped_lock{allocation_mutex};

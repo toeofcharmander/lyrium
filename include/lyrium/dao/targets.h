@@ -37,6 +37,8 @@ enum class TargetId : std::size_t
     crt_malloc,
     crt_free,
     crt_realloc,
+    pool_alloc,
+    pool_register,
     count,
 };
 
@@ -187,6 +189,36 @@ inline constexpr Target targets[] = {
         .reloc_mask = 0x0078,
         .sha256 = "f60cecfc0027ee4e602541f97044fb13795c9d5e898adcbac5a487a4052e4c08",
         .prologue = {0x6A, 0x10, 0x68, 0xD0, 0x30, 0xBE, 0x00, 0xE8, 0x5B, 0x7C, 0x00, 0x00, 0x8B, 0x5D, 0x08, 0x85},
+    },
+    // The two below were recovered with Ghidra rather than inherited, and both rows
+    // were produced by tools/ghidra/emit_target_rows.py -- which reproduces all
+    // thirteen rows above byte for byte, including every reloc_mask, when pointed at
+    // the same binary.
+    {
+        .name = "pool_alloc",
+        .symbol = "sub_4B92C0",
+        .comment = "MemoryManager::allocate - engine allocator entry, returns null when the pool is full",
+        .address = 0x004b92c0,
+        .size = 165,
+        // Nine bytes reaches the instruction boundary just before the JNZ at
+        // offset 9, so the branch stays outside the range the trampoline copies.
+        .patch_len = 9,
+        // The disp32 of `cmp [0x00c2b584], edi` at offsets 5..8, which is the
+        // manager pointer and moves if the image is ever rebased.
+        .reloc_mask = 0x01E0,
+        .sha256 = "adb63dc92fa33b9ade94a4f29b83549388f909f2a605c8a7904df67fbe05a31e",
+        .prologue = {0x57, 0x33, 0xFF, 0x39, 0x3D, 0x84, 0xB5, 0xC2, 0x00, 0x75, 0x0D, 0xE8, 0xD0, 0xFA, 0xFF, 0xFF},
+    },
+    {
+        .name = "pool_register",
+        .symbol = "sub_4B93F0",
+        .comment = "MemoryManager::registerPool - carries the size the pool actually got",
+        .address = 0x004b93f0,
+        .size = 254,
+        .patch_len = 7,
+        .reloc_mask = 0x0078,
+        .sha256 = "1b07ff97edc441ce7ca08888b743a55c9a6e8f8b92f95175baad45b259cd590b",
+        .prologue = {0x6A, 0xFF, 0x68, 0x28, 0xFF, 0xAB, 0x00, 0x64, 0xA1, 0x00, 0x00, 0x00, 0x00, 0x50, 0x83, 0xEC},
     },
 };
 
