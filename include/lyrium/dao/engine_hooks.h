@@ -3,6 +3,8 @@
 #include <cstddef>
 #include <cstdint>
 
+#include "lyrium/dao/size_histogram.h"
+
 namespace lyrium::dao
 {
 
@@ -99,6 +101,12 @@ struct EngineState
     // figure that matters: free space that is not contiguous cannot hold an asset,
     // and the engine skipping an asset it cannot fit is invisible to every failure
     // counter because it never attempts the allocation.
+    // Requested sizes, from the detour, and live used-block sizes, from the walk.
+    // The first is churn, the second is demand -- together they set the side
+    // pool's threshold and how large it has to be.
+    SizeHistogram request_sizes;
+    SizeHistogram main_pool_used_sizes;
+
     bool main_pool_walked;
     bool main_pool_walk_capped;
     std::uint64_t main_pool_walk_us;

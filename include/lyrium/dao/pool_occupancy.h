@@ -2,6 +2,8 @@
 
 #include <cstdint>
 
+#include "lyrium/dao/size_histogram.h"
+
 // How full the engine's main pool is, which is the question a failure counter
 // cannot answer.
 //
@@ -50,6 +52,11 @@ struct BlockTally
     // The figure that matters. Free space that is not contiguous cannot hold an
     // asset, so a total on its own says nothing about whether the next load fits.
     std::uint64_t largest_free_bytes;
+
+    // Live demand, by size. Free blocks are holes rather than demand and are
+    // deliberately excluded: this is the figure that answers "how large would an
+    // arena serving everything at or above N have to be".
+    SizeHistogram used_sizes;
 };
 
 // Folds one block into the tally. Returns false when the block cannot be believed,
@@ -67,6 +74,7 @@ struct BlockTally
     if (in_use)
     {
         tally.used_bytes += size;
+        note_size(tally.used_sizes, size);
     }
     else
     {

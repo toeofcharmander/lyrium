@@ -15,6 +15,7 @@
 #include "lyrium/dao/inline_hook.h"
 #include "lyrium/dao/pool_layout.h"
 #include "lyrium/dao/pool_occupancy.h"
+#include "lyrium/dao/size_histogram.h"
 #include "lyrium/dao/targets.h"
 #include "lyrium/diag/alloc_context.h"
 #include "lyrium/log.h"
@@ -98,6 +99,11 @@ std::atomic<std::uint64_t> counter_malloc_largest{};
 std::atomic<std::uint64_t> counter_pool_allocs{};
 std::atomic<std::uint64_t> counter_pool_alloc_failures{};
 std::atomic<std::uint64_t> counter_pool_alloc_largest{};
+
+// Requested sizes by power of two. Plain relaxed adds on the hottest path in the
+// process; size_bucket is a single bsr.
+std::atomic<std::uint64_t> request_counts[SizeHistogram::bucket_count]{};
+std::atomic<std::uint64_t> request_bytes[SizeHistogram::bucket_count]{};
 
 std::atomic<std::uint32_t> traced_hook_calls{};
 
@@ -701,6 +707,10 @@ LYRIUM_CDECL auto pool_alloc_detour(std::uint32_t size, std::int32_t tag) -> voi
             counter_pool_alloc_failures.fetch_add(1u, std::memory_order_relaxed);
         }
 
+        const auto bucket = size_bucket(size);
+        request_counts[bucket].fetch_add(1u, std::memory_order_relaxed);
+        request_bytes[bucket].fetch_add(size, std::memory_order_relaxed);
+
         auto largest = counter_pool_alloc_largest.load(std::memory_order_relaxed);
         while (size > largest &&
                !counter_pool_alloc_largest.compare_exchange_weak(largest, size, std::memory_order_relaxed))
@@ -1018,6 +1028,11 @@ auto engine_state() -> EngineState
     state.pool_allocs = counter_pool_allocs.load(std::memory_order_relaxed);
     state.pool_alloc_failures = counter_pool_alloc_failures.load(std::memory_order_relaxed);
     state.pool_alloc_largest_bytes = counter_pool_alloc_largest.load(std::memory_order_relaxed);
+    for (auto bucket = std::size_t{0}; bucket < SizeHistogram::bucket_count; ++bucket)
+    {
+        state.request_sizes.counts[bucket] = request_counts[bucket].load(std::memory_order_relaxed);
+        state.request_sizes.bytes[bucket] = request_bytes[bucket].load(std::memory_order_relaxed);
+    }
     state.main_pool_observed =
         read_main_pool(state.main_pool_base, state.main_pool_bytes, state.main_pool_usable_bytes);
 
@@ -1041,6 +1056,7 @@ auto engine_state() -> EngineState
             state.main_pool_used_bytes = tally.used_bytes;
             state.main_pool_free_bytes = tally.free_bytes;
             state.main_pool_largest_free_bytes = tally.largest_free_bytes;
+            state.main_pool_used_sizes = tally.used_sizes;
         }
     }
 

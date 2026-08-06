@@ -18,6 +18,7 @@
 #include "lyrium/dao/engine_hooks.h"
 #include "lyrium/dao/pool_budget.h"
 #include "lyrium/dao/pool_patch.h"
+#include "lyrium/dao/size_histogram.h"
 #include "lyrium/diag/alloc_watch.h"
 #include "lyrium/diag/import_probe.h"
 #include "lyrium/diag/process_info.h"
@@ -269,6 +270,28 @@ auto log_ledger_snapshot(std::string_view reason, const lyrium::diag::VaStats &)
                 engine.main_pool_largest_free_bytes,
                 engine.main_pool_walk_us,
                 engine.main_pool_walk_capped);
+
+            // What a side pool at each candidate threshold would have to carry.
+            // req is churn through the allocator; live is what is actually
+            // resident, taken from the walk, and is the figure that sizes an
+            // arena. Both are cumulative: req_1m counts everything >= 1 MB.
+            const auto at = [](const lyrium::dao::SizeHistogram &h, std::uint64_t t)
+            { return lyrium::dao::bytes_at_or_above(h, t); };
+            constexpr auto kb = std::uint64_t{1024};
+            lyrium::log(
+                "poolhist[{}]: req_256k={} req_1m={} req_4m={} req_16m={} req_64m={} "
+                "live_256k={} live_1m={} live_4m={} live_16m={} live_64m={}",
+                reason,
+                at(engine.request_sizes, 256u * kb),
+                at(engine.request_sizes, 1024u * kb),
+                at(engine.request_sizes, 4096u * kb),
+                at(engine.request_sizes, 16384u * kb),
+                at(engine.request_sizes, 65536u * kb),
+                at(engine.main_pool_used_sizes, 256u * kb),
+                at(engine.main_pool_used_sizes, 1024u * kb),
+                at(engine.main_pool_used_sizes, 4096u * kb),
+                at(engine.main_pool_used_sizes, 16384u * kb),
+                at(engine.main_pool_used_sizes, 65536u * kb));
         }
     }
 

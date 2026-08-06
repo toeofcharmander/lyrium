@@ -3,6 +3,7 @@
 #include <gtest/gtest.h>
 
 #include "lyrium/dao/pool_occupancy.h"
+#include "lyrium/dao/size_histogram.h"
 
 using lyrium::dao::BlockTally;
 using lyrium::dao::tally_block;
@@ -68,4 +69,17 @@ TEST(PoolOccupancy, ABlockExactlyFillingTheRemainderIsAccepted)
 
     EXPECT_TRUE(tally_block(tally, 4096u, true, 4096u));
     EXPECT_EQ(tally.blocks, 1u);
+}
+
+TEST(PoolOccupancy, UsedBlocksAreBucketedBySizeButFreeOnesAreNot)
+{
+    // The live used-block distribution is what sizes the arena: it answers "how
+    // many bytes would a threshold of N have to hold". Free blocks are holes, not
+    // demand, so they must not inflate that figure.
+    auto tally = BlockTally{};
+
+    EXPECT_TRUE(tally_block(tally, 4u * 1024u * 1024u, true, 1u << 30u));
+    EXPECT_TRUE(tally_block(tally, 8u * 1024u * 1024u, false, 1u << 30u));
+
+    EXPECT_EQ(lyrium::dao::bytes_at_or_above(tally.used_sizes, 1u * 1024u * 1024u), 4u * 1024u * 1024u);
 }
