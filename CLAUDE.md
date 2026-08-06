@@ -1,5 +1,8 @@
 # CLAUDE.md
 
+This file provides guidance to Claude Code (claude.ai/code) when working with
+code in this repository.
+
 A proxy `d3d9.dll` (project name "lyrium") for Dragon Age: Origins, dropped next
 to `daorigins.exe`, which loads it instead of the system DLL.
 
@@ -32,6 +35,39 @@ linking broke and it will not run next to the game.
 for the wrong ABI.
 
 Formatting: `.clang-format` at the root (Allman, 4-space, 120 columns).
+
+## Tests
+
+Every test is its own executable, because some of them drive process-global
+counters into states that would corrupt every later assertion in the same
+binary. So a single test is either
+
+```
+ctest --preset tests-linux32 -R rescue_policy
+build/tests-linux32/tests/rescue_policy_test --gtest_filter='*Watermark*'
+```
+
+Targets are declared with `lyrium_add_test` in `tests/CMakeLists.txt`, which
+takes two flags:
+
+- `KNOWN_DEFECT` labels the test `known_defect`. The `tests-linux32` test preset
+  excludes that label, so the green loop stays green; `ctest --preset
+  known-defects` runs exactly those and they are **expected to fail** until the
+  bug they pin is fixed. Nothing carries the label right now.
+- `NEEDS_D3D9_SHIM` puts `tests/shim/` on the include path. That header supplies
+  only the `D3DFORMAT` and `D3DPOOL` enumerators, so the texture-sizing code can
+  be tested without a Windows SDK. It is handed out per-target so it can never
+  shadow the genuine `<d3d9.h>` elsewhere.
+
+The shim's values are checked against the real header by
+`tests/conformance/d3d9_shim_conformance.cpp`, which only the `dll-win32`
+configure compiles — nothing links it, the `static_assert`s are the product. A
+value that drifts therefore breaks the DLL build, not the test run, and until you
+build the DLL the Linux sizing tests will happily measure the wrong thing.
+
+`tests/CMakeLists.txt` hard-errors on a 64-bit configure. The premise of the
+suite is ABI parity with the shipping DLL; at 8-byte pointers the allocator and
+address-space arithmetic would pass tests that mean nothing.
 
 ## Architecture
 
@@ -86,10 +122,22 @@ A healthy session ends with `va[shutdown]`, `textures[shutdown]`,
 with `detach: sealed`; if it ends earlier, the last breadcrumb names the
 statement that hung.
 
+Shift+F12 toggles the overlay, when `overlay=1` is set.
+
 In `va[...]`, `below2g` is the largest single contiguous block below the 2 GB
-line — the number that predicts a failed allocation. `low_total` is how much is
-free down there in total. Small `below2g` with large `low_total` is
-fragmentation; both small is exhaustion.
+line and `low_total` is how much is free down there in total. Small `below2g`
+with large `low_total` is fragmentation; both small is exhaustion.
+
+Which of `below2g` and `largest_free` actually binds depends on the image, and
+`diag::headroom_bytes` (`diag/va_region.h`) is what decides: `largest_free` when
+`daorigins.exe` is large-address-aware, `below2g` when it is not. That figure,
+not `below2g`, is what the rescue measures pressure against, and it is logged as
+`headroom=` alongside `laa=` and `low=` on the `rescue[...]` line. On an LAA
+install Windows allocates bottom-up and never walks past the line until nothing
+below it fits, so `largest_free` sits at 2,146,115,584 in every sample while
+`below2g` has fallen as low as 12 MB with not one texture create failing — a
+small `below2g` there is not a prediction of failure. Zero from a reading means
+"not walked yet" and is deliberately treated as pressure rather than as safety.
 
 Four of the ten engine hooks never fire on a stock install
 (`decode_texture_memory`, `create_texture_from_memory`,
