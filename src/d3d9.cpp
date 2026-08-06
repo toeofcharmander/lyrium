@@ -1376,8 +1376,7 @@ extern "C"
 
     // Needs the pool_alloc hook above, and the engine to have built its own pools;
     // both are true here and neither is true in DllMain.
-    config.engine.side_pool_bytes = planned_side_pool_bytes;
-    lyrium::dao::create_side_pool();
+    lyrium::dao::create_side_pool(planned_side_pool_bytes);
         lyrium::breadcrumb("Direct3DCreate9: engine hooks installed");
 
         if (const auto install = lyrium::dao::engine_install_state(); install.aborted)

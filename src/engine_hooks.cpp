@@ -978,9 +978,9 @@ auto refresh_pool_occupancy() -> void
     }
 }
 
-auto create_side_pool() -> void
+auto create_side_pool(std::uint64_t bytes) -> void
 {
-    if (config.side_pool_bytes == 0u)
+    if (bytes == 0u)
     {
         side_pool_state = "disabled";
         return;
@@ -1027,7 +1027,7 @@ auto create_side_pool() -> void
         return;
     }
 
-    const auto reservation = arena_reservation_bytes(config.side_pool_bytes);
+    const auto reservation = arena_reservation_bytes(bytes);
     auto *arena = ::VirtualAlloc(nullptr, reservation, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
     if (arena == nullptr)
     {
@@ -1055,7 +1055,7 @@ auto create_side_pool() -> void
         side_pool_id,
         L"lyrium",
         arena,
-        static_cast<std::uint32_t>(config.side_pool_bytes),
+        static_cast<std::uint32_t>(bytes),
         static_cast<std::int32_t>(pool_default_align_log2),
         0);
 
@@ -1073,7 +1073,7 @@ auto create_side_pool() -> void
         decline("could not read the pool back");
         return;
     }
-    if (!side_pool_is_attached(fields, arena_base, config.side_pool_bytes))
+    if (!side_pool_is_attached(fields, arena_base, bytes))
     {
         // The registrar always reports success, so this is where a failed attach
         // is actually caught.

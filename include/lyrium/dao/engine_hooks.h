@@ -21,11 +21,6 @@ struct EngineConfig
     // already crashed the game twice by interposing an allocator on first contact.
     bool hook_pool{false};
 
-    // A second heap for large allocations, built from the engine's own parts and
-    // registered in the pool manager's free slot. Zero is off. A malformed number
-    // parses as zero, which is the safe direction and is why this is the default.
-    std::uint64_t side_pool_bytes{0};
-
     // Allocations at or above this go to the side pool. Measured: at 1 MB the
     // largest request Main Pool still has to satisfy drops below 1 MB, against a
     // floor of 73 MB. Zero is off.
@@ -50,7 +45,7 @@ auto install_engine_hooks(const EngineConfig &config) -> void;
 // pool manager's free slot. Call once, after install_engine_hooks and after the
 // engine has built its own pools. Declines and leaves the process untouched on any
 // doubt; the reason is in engine_state().side_pool_state either way.
-auto create_side_pool() -> void;
+auto create_side_pool(std::uint64_t bytes) -> void;
 
 // Walks both pools and caches the result. Costs up to 17 ms, so it belongs on the
 // sampler thread; engine_state() only ever reads what this left behind.
