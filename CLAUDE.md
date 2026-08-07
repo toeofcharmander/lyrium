@@ -115,7 +115,8 @@ from `containers/`; ImGui is routed through `allocators/imgui_allocator.h`.
 ## The memory model
 
 Two things fragment, at two levels, and they are independent. Confusing them
-wasted a lot of time; keep them apart.
+wasted a lot of time; keep them apart. `docs/architecture.html` draws all of this
+to scale and is the fastest way back into it after time away.
 
 ```
 LEVEL 1 — the address space (2 GB, or 4 GB with LAA)

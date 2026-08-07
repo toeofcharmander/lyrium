@@ -1,0 +1,388 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>lyrium — architecture at both levels</title>
+<style>
+  :root {
+    --ink:        #0e1116;
+    --paper:      #f6f4ef;
+    --surface:    #ffffff;
+    --rule:       #d8d4cb;
+    --muted:      #6a7078;
+    --dim:        #8b9098;
+    --amber:      #b8752f;
+    --amber-soft: #e8d4b4;
+    --teal:       #2f7576;
+    --teal-soft:  #c3ddd9;
+    --danger:     #a8453b;
+    --free:       #e7e3da;
+    --mono: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
+    --serif: Charter, "Bitstream Charter", "Iowan Old Style", Georgia, serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --ink:        #e6e4df;
+      --paper:      #0e1116;
+      --surface:    #161a21;
+      --rule:       #2a3038;
+      --muted:      #939aa3;
+      --dim:        #6d747d;
+      --amber:      #d99549;
+      --amber-soft: #4a3a24;
+      --teal:       #57a8a6;
+      --teal-soft:  #1f3a3a;
+      --danger:     #d4695c;
+      --free:       #1d222a;
+    }
+  }
+  :root[data-theme="dark"] {
+    --ink: #e6e4df; --paper: #0e1116; --surface: #161a21; --rule: #2a3038;
+    --muted: #939aa3; --dim: #6d747d; --amber: #d99549; --amber-soft: #4a3a24;
+    --teal: #57a8a6; --teal-soft: #1f3a3a; --danger: #d4695c; --free: #1d222a;
+  }
+  :root[data-theme="light"] {
+    --ink: #0e1116; --paper: #f6f4ef; --surface: #ffffff; --rule: #d8d4cb;
+    --muted: #6a7078; --dim: #8b9098; --amber: #b8752f; --amber-soft: #e8d4b4;
+    --teal: #2f7576; --teal-soft: #c3ddd9; --danger: #a8453b; --free: #e7e3da;
+  }
+
+  body {
+    background: var(--paper); color: var(--ink);
+    font-family: var(--serif); font-size: 17px; line-height: 1.65;
+    margin: 0; padding: 0 24px 96px;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 1000px; margin: 0 auto; }
+  .measure { max-width: 34rem; }
+
+  header { padding: 72px 0 40px; border-bottom: 1px solid var(--rule); margin-bottom: 48px; }
+  .eyebrow {
+    font-family: var(--mono); font-size: 11px; letter-spacing: 0.16em;
+    text-transform: uppercase; color: var(--amber); margin: 0 0 18px;
+  }
+  h1 {
+    font-family: var(--mono); font-weight: 600; font-size: clamp(28px, 4.5vw, 40px);
+    letter-spacing: -0.02em; line-height: 1.15; margin: 0 0 20px; text-wrap: balance;
+  }
+  .standfirst { font-size: 20px; line-height: 1.55; color: var(--muted); margin: 0; max-width: 38rem; }
+
+  section { margin: 0 0 72px; }
+  h2 {
+    font-family: var(--mono); font-size: 12px; letter-spacing: 0.16em; text-transform: uppercase;
+    color: var(--ink); margin: 0 0 8px; padding-bottom: 10px; border-bottom: 1px solid var(--rule);
+  }
+  h3 {
+    font-family: var(--mono); font-size: 15px; font-weight: 600; letter-spacing: -0.01em;
+    margin: 40px 0 10px;
+  }
+  p { margin: 0 0 18px; }
+  strong { font-weight: 600; }
+  code {
+    font-family: var(--mono); font-size: 0.87em;
+    background: var(--surface); border: 1px solid var(--rule);
+    padding: 1px 5px; border-radius: 3px;
+  }
+
+  figure { margin: 32px 0; }
+  .fig-scroll { overflow-x: auto; }
+  figcaption {
+    font-family: var(--mono); font-size: 11.5px; line-height: 1.6; color: var(--dim);
+    margin-top: 12px; letter-spacing: 0.01em; max-width: 44rem;
+  }
+  svg { display: block; max-width: 100%; height: auto; }
+  .s-label { font-family: var(--mono); font-size: 11px; fill: var(--muted); letter-spacing: 0.06em; }
+  .s-title { font-family: var(--mono); font-size: 11px; fill: var(--ink); font-weight: 600; letter-spacing: 0.12em; }
+  .s-num   { font-family: var(--mono); font-size: 11px; fill: var(--ink); }
+  .s-small { font-family: var(--mono); font-size: 9.5px; fill: var(--dim); }
+
+  .grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 28px; margin: 28px 0; }
+  .card {
+    background: var(--surface); border: 1px solid var(--rule); border-radius: 4px; padding: 22px 24px;
+  }
+  .card.l1 { border-top: 2px solid var(--amber); }
+  .card.l2 { border-top: 2px solid var(--teal); }
+  .card h4 {
+    font-family: var(--mono); font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase;
+    margin: 0 0 12px; color: var(--muted);
+  }
+  .card p { font-size: 15.5px; margin: 0 0 12px; }
+  .card p:last-child { margin-bottom: 0; }
+
+  table { border-collapse: collapse; width: 100%; margin: 24px 0; font-family: var(--mono); font-size: 13.5px; }
+  caption { text-align: left; font-family: var(--mono); font-size: 11px; letter-spacing: 0.14em;
+            text-transform: uppercase; color: var(--muted); padding-bottom: 10px; }
+  th, td { text-align: left; padding: 9px 14px 9px 0; border-bottom: 1px solid var(--rule); vertical-align: top; }
+  th { font-weight: 600; color: var(--muted); font-size: 11px; letter-spacing: 0.1em; text-transform: uppercase; }
+  td.num { text-align: right; font-variant-numeric: tabular-nums; padding-right: 20px; }
+  .win { color: var(--teal); font-weight: 600; }
+  .lose { color: var(--danger); font-weight: 600; }
+
+  .callout {
+    border-left: 2px solid var(--amber); padding: 4px 0 4px 20px; margin: 28px 0;
+    color: var(--ink); max-width: 36rem;
+  }
+  .callout p { margin: 0; font-size: 17px; }
+
+  footer { border-top: 1px solid var(--rule); padding-top: 24px; margin-top: 24px;
+           font-family: var(--mono); font-size: 11.5px; color: var(--dim); }
+  a { color: var(--teal); }
+  a:focus-visible, [tabindex]:focus-visible { outline: 2px solid var(--teal); outline-offset: 3px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <p class="eyebrow">Dragon Age: Origins &middot; proxy d3d9.dll</p>
+  <h1>Two things fragment. They are not the same thing.</h1>
+  <p class="standfirst">lyrium fixes memory exhaustion at two independent levels of the
+  same 32-bit process. Confusing them is what made the fault hard to find, so this is
+  the map: what breaks where, and which component acts on it.</p>
+</header>
+
+<section>
+  <h2>The nesting</h2>
+  <div class="measure">
+    <p>The engine asks Windows for one enormous block at startup and then carves
+    everything it needs out of that block itself. Windows sees a single reservation and
+    never looks inside. That boundary is where the two levels divide.</p>
+  </div>
+
+  <figure class="fig-scroll">
+    <svg viewBox="0 0 940 330" role="img" aria-label="The address space contains the main pool as one reservation; inside that reservation the engine carves its own blocks.">
+      <text x="0" y="14" class="s-title">LEVEL 1 — ADDRESS SPACE, 4 GB WITH THE LAA PATCH</text>
+
+      <rect x="0" y="28" width="940" height="46" fill="var(--free)" stroke="var(--rule)"/>
+      <rect x="0"   y="28" width="130" height="46" fill="var(--amber-soft)" stroke="var(--rule)"/>
+      <rect x="130" y="28" width="52"  height="46" fill="var(--amber-soft)" stroke="var(--rule)"/>
+      <rect x="182" y="28" width="330" height="46" fill="var(--surface)" stroke="var(--amber)" stroke-width="2"/>
+      <rect x="512" y="28" width="230" height="46" fill="var(--teal-soft)" stroke="var(--teal)" stroke-width="2"/>
+      <rect x="742" y="28" width="150" height="46" fill="var(--amber-soft)" stroke="var(--rule)"/>
+
+      <text x="12"  y="56" class="s-small">exe + dlls</text>
+      <text x="140" y="56" class="s-small">strings</text>
+      <text x="196" y="56" class="s-num">MAIN POOL</text>
+      <text x="526" y="56" class="s-num">SIDE POOL</text>
+      <text x="754" y="56" class="s-small">textures</text>
+      <text x="900" y="56" class="s-small">free</text>
+
+      <path d="M 347 74 L 347 104 L 200 104 L 200 128" fill="none" stroke="var(--amber)" stroke-width="1.5" stroke-dasharray="3 3"/>
+      <text x="360" y="98" class="s-small">one reservation — Windows never looks inside</text>
+
+      <text x="0" y="152" class="s-title">LEVEL 2 — INSIDE THE MAIN POOL</text>
+
+      <rect x="0" y="166" width="940" height="46" fill="var(--free)" stroke="var(--rule)"/>
+      <g fill="var(--amber)">
+        <rect x="14"  y="166" width="7" height="46"/><rect x="38" y="166" width="4" height="46"/>
+        <rect x="76"  y="166" width="9" height="46"/><rect x="122" y="166" width="5" height="46"/>
+        <rect x="168" y="166" width="6" height="46"/><rect x="214" y="166" width="4" height="46"/>
+        <rect x="272" y="166" width="8" height="46"/><rect x="331" y="166" width="5" height="46"/>
+        <rect x="390" y="166" width="6" height="46"/><rect x="442" y="166" width="4" height="46"/>
+        <rect x="503" y="166" width="9" height="46"/><rect x="561" y="166" width="5" height="46"/>
+        <rect x="618" y="166" width="6" height="46"/><rect x="676" y="166" width="4" height="46"/>
+        <rect x="731" y="166" width="8" height="46"/><rect x="790" y="166" width="5" height="46"/>
+        <rect x="848" y="166" width="6" height="46"/><rect x="902" y="166" width="4" height="46"/>
+      </g>
+      <text x="0" y="232" class="s-label">~1,400,000 small blocks that are never freed. The gaps between them only ever shrink.</text>
+
+      <line x1="0" y1="262" x2="940" y2="262" stroke="var(--rule)"/>
+      <rect x="0" y="278" width="10" height="10" fill="var(--amber)"/>
+      <text x="18" y="288" class="s-small">pinned — long-lived engine allocations</text>
+      <rect x="300" y="278" width="10" height="10" fill="var(--teal-soft)" stroke="var(--teal)"/>
+      <text x="318" y="288" class="s-small">lyrium's side pool</text>
+      <rect x="520" y="278" width="10" height="10" fill="var(--free)" stroke="var(--rule)"/>
+      <text x="538" y="288" class="s-small">free</text>
+    </svg>
+    <figcaption>Bars are proportional to a 4 GB image running the shipped configuration:
+      strings 55 MB, main pool 969 MB, side pool 945 MB, textures peaking at 411 MB.</figcaption>
+  </figure>
+
+  <div class="grid2">
+    <div class="card l1">
+      <h4>Level 1 — the address space</h4>
+      <p><strong>What fragments it.</strong> Managed textures each keep a full CPU-side
+      copy. Every copy over 508 KB becomes its own reservation, and they turn over
+      constantly at varying sizes.</p>
+      <p><strong>What lyrium does.</strong> Creates eligible textures in
+      <code>D3DPOOL_DEFAULT</code>, which has no CPU copy, and hands the engine a
+      pagefile-backed buffer when it locks one. The duplicate is never made.</p>
+      <p><strong>Reported as.</strong> <code>va[…]</code> — <code>below2g</code>,
+      <code>largest_free</code>.</p>
+    </div>
+    <div class="card l2">
+      <h4>Level 2 — inside the main pool</h4>
+      <p><strong>What fragments it.</strong> The engine's own small, long-lived
+      allocations, scattered through the pool like pillars. One session handed back
+      330 MB without the largest gap growing by a byte.</p>
+      <p><strong>What lyrium does.</strong> Builds a second heap from the engine's own
+      allocator class and routes everything ≥ 1 MB into it.</p>
+      <p><strong>Reported as.</strong> <code>pool[…]</code> and <code>side[…]</code> —
+      <code>largest_free</code>, <code>full</code>.</p>
+    </div>
+  </div>
+</section>
+
+<section>
+  <h2>The fault at level 2</h2>
+  <div class="measure">
+    <p>The engine periodically needs <strong>71.6 MB in one unbroken piece</strong>. As
+    the pinned blocks accumulate, the largest gap falls past that line — and the engine
+    does not fail or complain. It checks, sees no room, and skips loading the asset.</p>
+  </div>
+
+  <div class="callout">
+    <p>Nothing is ever attempted, so nothing is ever counted. Through the crash that
+    emptied Denerim market, every failure counter in the process read zero.</p>
+  </div>
+
+  <figure class="fig-scroll">
+    <svg viewBox="0 0 940 300" role="img" aria-label="Largest free gap over a session, with and without the side pool, against the 71.6 MB the engine needs contiguously.">
+      <line x1="70" y1="20"  x2="70" y2="230" stroke="var(--rule)"/>
+      <line x1="70" y1="230" x2="900" y2="230" stroke="var(--rule)"/>
+
+      <text x="0" y="24"  class="s-small">560 MB</text>
+      <text x="0" y="230" class="s-small">0</text>
+
+      <line x1="70" y1="203" x2="900" y2="203" stroke="var(--danger)" stroke-width="1.5" stroke-dasharray="5 4"/>
+      <text x="700" y="197" class="s-small" fill="var(--danger)">71.6 MB — what must fit in one piece</text>
+
+      <polyline points="70,42 274,172 480,203 690,203 900,203"
+                fill="none" stroke="var(--amber)" stroke-width="2.5"/>
+      <circle cx="900" cy="203" r="4" fill="var(--amber)"/>
+      <text x="700" y="160" class="s-num" fill="var(--amber)">without the side pool</text>
+      <text x="700" y="176" class="s-small">507.8 → 154.3 → 73.1 MB · margin 1.02×</text>
+
+      <polyline points="70,42 274,130 480,148 690,151 900,152"
+                fill="none" stroke="var(--teal)" stroke-width="2.5"/>
+      <circle cx="900" cy="152" r="4" fill="var(--teal)"/>
+      <text x="330" y="118" class="s-num" fill="var(--teal)">with the side pool</text>
+      <text x="330" y="134" class="s-small">507.8 → 267.5 → 209.4 MB, then flat · margin 209×</text>
+
+      <text x="70"  y="252" class="s-small">session start</text>
+      <text x="820" y="252" class="s-small">session end</text>
+
+      <text x="0" y="286" class="s-label">Same 521 MB main pool, same route through Denerim, same total memory. Measured, not modelled.</text>
+    </svg>
+    <figcaption>The line does not stop falling — it falls further. What changes is that
+      nothing left in the main pool needs more than 1 MB, so the fall stops mattering.</figcaption>
+  </figure>
+</section>
+
+<section>
+  <h2>The routing rule</h2>
+  <div class="measure">
+    <p>lyrium already detours the engine's allocator entry point. When the side pool is
+    armed, it serves large requests directly through the pool's own vtable rather than
+    pushing a thread tag — the engine's push silently no-ops once the tag stack is 32
+    deep while its pop always decrements, and an unbalanced pair would misroute every
+    later allocation on that thread.</p>
+  </div>
+
+  <figure class="fig-scroll">
+    <svg viewBox="0 0 940 250" role="img" aria-label="Routing decision: allocations of 1 MB or more that carry no engine tag go to the side pool; everything else, and anything the side pool refuses, goes to the main pool.">
+      <rect x="0" y="14" width="180" height="42" rx="3" fill="var(--surface)" stroke="var(--rule)"/>
+      <text x="16" y="40" class="s-num">engine asks for N bytes</text>
+      <line x1="180" y1="35" x2="232" y2="35" stroke="var(--muted)"/>
+
+      <rect x="232" y="14" width="150" height="42" rx="3" fill="var(--surface)" stroke="var(--muted)"/>
+      <text x="248" y="40" class="s-num">N ≥ 1 MB?</text>
+      <line x1="382" y1="35" x2="434" y2="35" stroke="var(--muted)"/>
+      <text x="396" y="28" class="s-small">yes</text>
+
+      <rect x="434" y="14" width="176" height="42" rx="3" fill="var(--surface)" stroke="var(--muted)"/>
+      <text x="450" y="40" class="s-num">untagged?</text>
+      <line x1="610" y1="35" x2="662" y2="35" stroke="var(--muted)"/>
+      <text x="624" y="28" class="s-small">yes</text>
+
+      <rect x="662" y="14" width="176" height="42" rx="3" fill="var(--surface)" stroke="var(--muted)"/>
+      <text x="678" y="40" class="s-num">room in the arena?</text>
+
+      <line x1="750" y1="56" x2="750" y2="96" stroke="var(--teal)"/>
+      <text x="758" y="80" class="s-small" fill="var(--teal)">yes</text>
+      <rect x="662" y="96" width="176" height="44" rx="3" fill="var(--teal-soft)" stroke="var(--teal)" stroke-width="2"/>
+      <text x="678" y="123" class="s-num" fill="var(--teal)">SIDE POOL</text>
+
+      <path d="M 838 118 L 880 118 L 880 186 L 210 186 L 210 168" fill="none" stroke="var(--muted)" stroke-dasharray="3 3"/>
+      <text x="600" y="180" class="s-small">no — falls through, exactly today's behaviour</text>
+
+      <line x1="307" y1="56" x2="307" y2="168" stroke="var(--muted)"/>
+      <text x="315" y="112" class="s-small">no</text>
+      <line x1="522" y1="56" x2="522" y2="168" stroke="var(--muted)"/>
+      <text x="530" y="112" class="s-small">no — the engine chose a pool</text>
+
+      <rect x="120" y="168" width="180" height="44" rx="3" fill="var(--surface)" stroke="var(--amber)" stroke-width="2"/>
+      <text x="136" y="195" class="s-num" fill="var(--amber)">MAIN POOL</text>
+      <line x1="522" y1="190" x2="300" y2="190" stroke="var(--muted)"/>
+      <line x1="307" y1="168" x2="307" y2="190" stroke="var(--muted)"/>
+    </svg>
+    <figcaption>Freeing needs no cooperation. The engine resolves a block's owning pool by
+      address, range-checking all four slots, and the arena is a separate reservation — so
+      exactly one pool can ever claim a pointer.</figcaption>
+  </figure>
+</section>
+
+<section>
+  <h2>Which component acts where</h2>
+  <table>
+    <caption>lyrium's parts, by the level they operate on</caption>
+    <thead>
+      <tr><th>Component</th><th>Level</th><th>What it does</th><th>Default</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>texture relocation</td><td>1</td><td>stops the CPU-side duplicate existing</td><td>on</td></tr>
+      <tr><td>side pool</td><td>2</td><td>a second heap for allocations ≥ 1 MB</td><td>on</td></tr>
+      <tr><td>pool patch</td><td>1</td><td>sets the budget the engine divides up</td><td>on</td></tr>
+      <tr><td>rescue</td><td>1</td><td>bounded eviction under address-space pressure</td><td>on, never fired</td></tr>
+      <tr><td>engine hooks</td><td>—</td><td>11 inline hooks; verified by hash before any patch</td><td>on</td></tr>
+      <tr><td>occupancy walk</td><td>2</td><td>reads both pools on the sampler thread</td><td>with pool hooks</td></tr>
+    </tbody>
+  </table>
+
+  <h3>Measured, shipped configuration</h3>
+  <table>
+    <caption>Both executables, peak combat load, shipped artifact unmodified</caption>
+    <thead>
+      <tr><th>Image</th><th class="num">Pools</th><th class="num">Main clear</th><th class="num">Side clear</th><th class="num">Side peak</th><th>Refusals</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>4 GB, additive</td><td class="num">1969 MB</td><td class="num">715.0 MB</td><td class="num">718.6 MB</td><td class="num">188.8 MB</td><td class="win">0</td></tr>
+      <tr><td>2 GB, clamped</td><td class="num">768 MB</td><td class="num">133.3 MB</td><td class="num">147.0 MB</td><td class="num">136.2 MB</td><td class="win">0</td></tr>
+      <tr><td>2 GB, no side pool</td><td class="num">768 MB</td><td class="num lose">73.1 MB</td><td class="num">—</td><td class="num">—</td><td class="lose">content dropped</td></tr>
+    </tbody>
+  </table>
+  <div class="measure">
+    <p>Both clear figures are against the 71.6 MB that must fit in one piece. The last
+    row is the same hardware and route with routing disabled: margin 1.02×, missing
+    NPCs, no cutscene, crash inside a bulk-copy routine.</p>
+  </div>
+</section>
+
+<section>
+  <h2>What this does not do</h2>
+  <div class="measure">
+    <p>Neither fix prevents fragmentation. Relocation removes the fragmenter at level 1.
+    The side pool leaves level 2 fragmenting exactly as much as before and moves out the
+    only thing that needed contiguity.</p>
+    <p>The side pool is the one arena that still depends on contiguity, so it inherits
+    the whole problem — but it holds tens of large blocks rather than a million small
+    ones, so a freed block's neighbours are usually free too and they merge. Its clear
+    run has been measured recovering, from 803.9 back to 850.4 MB, which the main pool
+    has never once done.</p>
+    <p>Nothing here helps with texture address space. Textures are D3D allocations
+    competing for the same 2 GB, and on a stock executable a heavy texture list runs out
+    of room whatever the pools are sized at. That is what the 4 GB patch is for.</p>
+  </div>
+</section>
+
+<footer>
+  Every figure measured on one install and one route. The overlay reports the same three
+  arenas live, so a different setup shows its own trouble rather than inheriting these
+  assumptions.
+</footer>
+
+</div>
+
+</body>
+</html>

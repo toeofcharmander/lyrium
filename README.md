@@ -126,6 +126,12 @@ run no longer lives there. Measured on a 2 GB image, same route, same total memo
 A bounded eviction path also exists as a backstop; it does not fire on a correctly
 configured install.
 
+**[`docs/architecture.html`](docs/architecture.html)** covers the same ground with
+proper diagrams — the two levels drawn to scale, the largest-gap curve with and
+without the side pool, the routing rule, and which component acts at which level.
+GitHub shows HTML as source, so download it and open it locally, or view it through
+[htmlpreview](https://htmlpreview.github.io/?https://github.com/toeofcharmander/lyrium/blob/main/docs/architecture.html).
+
 ## Sizing
 
 The numbers above are for a 2 GB executable, where every megabyte is contested:
