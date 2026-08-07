@@ -95,7 +95,7 @@ struct PoolSplit
         return PoolSplit{
             static_cast<std::uint32_t>(max_non_laa_pool_bytes - non_laa_side_bytes),
             non_laa_side_bytes,
-            "clamped to what a 2 GB image can carry"};
+            "clamped to what a 2 GB image can carry; a 4 GB patch would lift this"};
     }
 
     // A deliberately small budget is honoured rather than clamped upward; only the

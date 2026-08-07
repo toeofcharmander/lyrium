@@ -13,6 +13,16 @@ late-session texture flickering, missing scenery, and crashes.
 
 ## Installing
 
+**Patch `DAOrigins.exe` for 4 GB first if you have not already.** The game is
+32-bit and ships limited to 2 GB of address space; the patch lifts that to 4 GB on
+any 64-bit Windows. lyrium works either way, but on a 2 GB executable it has to
+share out a much smaller budget, and a heavy texture list will run out of address
+space no matter what lyrium does with the pools. Any of the usual 4 GB patchers
+will do it — it sets one flag in the executable header.
+
+lyrium reads that flag and tells you which it found: the log line at startup says
+`image: large_address_aware=true` or `false`, and the overlay says so too.
+
 Drop `d3d9.dll` next to `DAOrigins.exe`, in `bin_ship`, and put a `lyrium.ini`
 beside it:
 

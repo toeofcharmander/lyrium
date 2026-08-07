@@ -305,6 +305,16 @@ auto draw_headroom() -> void
         const auto clear = binding_headroom(snapshot);
         draw_headroom_row("address", clear, 0u, snapshot.total_free != 0u ? snapshot.total_free : clear);
 
+        // The first question anyone asks is whether they patched for 4 GB, and
+        // lyrium already read the flag, so it answers rather than being asked.
+        if (!diag::read_image_flags().large_address_aware)
+        {
+            ::ImGui::TextDisabled("%12s", "");
+            ::ImGui::SameLine();
+            ::ImGui::TextColored(
+                ::ImVec4{1.0f, 0.70f, 0.25f, 1.0f}, "2 GB executable - a 4 GB patch would raise this");
+        }
+
         // Informative but not binding on a 4 GB image, and alarming if mistaken
         // for the headroom, so it is named rather than left as a bare figure.
         if (clear != snapshot.largest_free_below_2g)
