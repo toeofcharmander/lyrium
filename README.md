@@ -30,9 +30,12 @@ beside it:
 [lyrium]
 main_pool_mb=1024
 side_pool_mb=945
-overlay=1
-logging=1
 ```
+
+Both diagnostics are off by default. `overlay=1` puts a panel on Shift+F12 — three
+bars, one per arena, each showing the largest clear run against what it must still
+fit. `logging=1` writes a session log to `lyrium_logs/`. Turn either on when
+something needs diagnosing.
 
 The same file works whether or not you have run a 4 GB patcher. lyrium reads the
 LAA flag out of the executable's header: on a 4 GB image the side pool is added on
