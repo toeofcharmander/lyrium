@@ -26,6 +26,7 @@
 #include "lyrium/diag/texture_size.h"
 #include "lyrium/diag/va_space.h"
 #include "lyrium/hooks/com_hook.h"
+#include "lyrium/hooks/iat_hook.h"
 #include "lyrium/log.h"
 #include "lyrium/never_destroyed.h"
 #include "lyrium/overlay.h"
@@ -137,6 +138,12 @@ auto main_pool_override_bytes() -> std::uint32_t
     }
     return static_cast<std::uint32_t>(megabytes) * 1024u * 1024u;
 }
+
+// Set only in the dinput8 build, where lyrium is not d3d9.dll and reaches
+// Direct3DCreate9 by patching the game's import table. Null in the d3d9 build,
+// which is the import table entry itself and loads the system DLL directly.
+using Direct3DCreate9Fn = ::IDirect3D9 *(WINAPI *)(::UINT);
+Direct3DCreate9Fn original_direct3d_create9{};
 
 lyrium::dao::PoolPatchResult pool_patch_result{};
 
@@ -1413,6 +1420,22 @@ extern "C"
         lyrium::breadcrumb("Direct3DCreate9: sampler started");
     }
 
+    // On the dinput8 build this is whatever the game's import table held, which
+    // on a ReShade install is ReShade rather than the system DLL -- so lyrium
+    // wraps it instead of replacing it.
+    if (original_direct3d_create9 != nullptr)
+    {
+        lyrium::breadcrumb("Direct3DCreate9: forwarding through the hooked import");
+        auto *chained = original_direct3d_create9(SDKVersion);
+        lyrium::log("hooked Direct3DCreate9 returned {}", static_cast<void *>(chained));
+        if (chained != nullptr)
+        {
+            com_hook.add_hook<16zu>(chained, IDirect3D9_CreateDevice_hook);
+            lyrium::breadcrumb("Direct3DCreate9: proxy hook installed");
+        }
+        return chained;
+    }
+
     lyrium::breadcrumb("Direct3DCreate9: loading system d3d9");
     char system_path[MAX_PATH]{};
     ::GetSystemDirectoryA(system_path, MAX_PATH);
@@ -1495,6 +1518,24 @@ extern "C"
             // discarded. A shrunk pool with no hooks is strictly worse than not
             // loading at all, so the patch now defers to the same verification
             // the hooks will use.
+            // Reach Direct3DCreate9 without owning the filename. In the d3d9
+            // build the entry already points at our own export, so the swap is a
+            // no-op and is detected as one -- the same source then falls through
+            // to loading the system DLL, and neither build needs to know which it
+            // is.
+            {
+                auto *previous = lyrium::hooks::patch_import(
+                    ::GetModuleHandleA(nullptr),
+                    "d3d9.dll",
+                    "Direct3DCreate9",
+                    reinterpret_cast<void *>(&Direct3DCreate9));
+
+                if (previous != nullptr && previous != reinterpret_cast<void *>(&Direct3DCreate9))
+                {
+                    original_direct3d_create9 = reinterpret_cast<Direct3DCreate9Fn>(previous);
+                }
+            }
+
             if (lyrium::dao::targets_verify_clean())
             {
                 // The side pool has to be paid for before the budget is written,

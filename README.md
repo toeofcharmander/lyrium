@@ -23,8 +23,17 @@ will do it — it sets one flag in the executable header.
 lyrium reads that flag and tells you which it found: the log line at startup says
 `image: large_address_aware=true` or `false`, and the overlay says so too.
 
-Drop `d3d9.dll` next to `DAOrigins.exe`, in `bin_ship`, and put a `lyrium.ini`
-beside it:
+There are two downloads. They are the same mod, built under two filenames, and you
+install exactly one of them.
+
+- **lyriumMemoryHandler** gives you `d3d9.dll`. Use this unless you run ReShade.
+- **lyriumReShade** gives you `dinput8.dll`. ReShade also installs as `d3d9.dll`
+  and only one file can have that name, so this build takes a different slot and
+  reaches Direct3D another way. Use it if you have ReShade, or any other mod that
+  wants to be `d3d9.dll`.
+
+Never install both. Drop the one DLL next to `DAOrigins.exe`, in `bin_ship`, and
+put `lyrium.ini` beside it:
 
 ```ini
 [lyrium]

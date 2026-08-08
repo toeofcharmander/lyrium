@@ -40,25 +40,41 @@ endif()
 
 install(TARGETS lyrium DESTINATION bin)
 
-add_library(d3d9 SHARED
-  d3d9.cpp
-  overlay.cpp
-  engine_hooks.cpp
-  resettable_texture.cpp
-  d3d9.def
-)
-target_link_libraries(d3d9 PRIVATE lyrium imguilib dwmapi psapi)
-target_compile_options(d3d9 PRIVATE -Wno-microsoft-exception-spec)
+# lyrium ships under either of two filenames, from the same sources.
+#
+#   d3d9.dll     the graphics proxy. Exports Direct3DCreate9 and loads the system
+#                DLL behind it. Cannot coexist with ReShade, which wants that name.
+#   dinput8.dll  takes an earlier, unrelated slot the game also imports, forwards
+#                DirectInput straight through, and reaches Direct3DCreate9 by
+#                patching the game's import table. Leaves d3d9.dll for ReShade.
+#
+# The difference is the .def and one extra translation unit. d3d9.cpp detects which
+# it is at run time by whether the import swap actually changed anything.
+function(lyrium_add_proxy name)
+  cmake_parse_arguments(ARG "" "" "SOURCES" ${ARGN})
+  add_library(${name} SHARED
+    d3d9.cpp
+    overlay.cpp
+    engine_hooks.cpp
+    resettable_texture.cpp
+    ${ARG_SOURCES}
+  )
+  target_link_libraries(${name} PRIVATE lyrium imguilib dwmapi psapi)
+  target_compile_options(${name} PRIVATE -Wno-microsoft-exception-spec)
 
-# The game loads this DLL by name, so the filename must stay exactly d3d9.dll --
-# PREFIX "" is what stops MinGW emitting libd3d9.dll.
-set_target_properties(d3d9 PROPERTIES PREFIX "")
+  # The game loads these by name, so the filenames must stay exact --
+  # PREFIX "" is what stops MinGW emitting libd3d9.dll.
+  set_target_properties(${name} PROPERTIES PREFIX "")
 
-# The DLL is dropped next to daorigins.exe and must stand alone: no dependency on
-# libstdc++-6.dll, libgcc_s_dw2-1.dll or libwinpthread-1.dll.
-if (LYRIUM_STATIC_RUNTIME)
-  target_link_options(d3d9 PRIVATE -static)
-endif()
+  # Dropped next to daorigins.exe and must stand alone: no dependency on
+  # libstdc++-6.dll, libgcc_s_dw2-1.dll or libwinpthread-1.dll.
+  if (LYRIUM_STATIC_RUNTIME)
+    target_link_options(${name} PRIVATE -static)
+  endif()
+endfunction()
+
+lyrium_add_proxy(d3d9 SOURCES d3d9.def)
+lyrium_add_proxy(dinput8 SOURCES dinput8.cpp dinput8.def)
 
 # Proves the enum values in tests/shim/d3d9_enum_list.inl match the genuine
 # <d3d9.h>. It is compiled here because this is the only configuration that has
@@ -74,3 +90,4 @@ target_include_directories(lyrium_d3d9_shim_conformance PRIVATE
 )
 target_compile_features(lyrium_d3d9_shim_conformance PRIVATE cxx_std_26)
 add_dependencies(d3d9 lyrium_d3d9_shim_conformance)
+add_dependencies(dinput8 lyrium_d3d9_shim_conformance)
