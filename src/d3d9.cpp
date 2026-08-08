@@ -1518,11 +1518,13 @@ extern "C"
             // discarded. A shrunk pool with no hooks is strictly worse than not
             // loading at all, so the patch now defers to the same verification
             // the hooks will use.
-            // Reach Direct3DCreate9 without owning the filename. In the d3d9
-            // build the entry already points at our own export, so the swap is a
-            // no-op and is detected as one -- the same source then falls through
-            // to loading the system DLL, and neither build needs to know which it
-            // is.
+#ifdef LYRIUM_IMPORT_HOOK
+            // Reach Direct3DCreate9 without owning the filename. Only the dinput8
+            // build does this; the d3d9 build is the import entry, and hooking
+            // itself would either be a no-op or, if the loader had not yet snapped
+            // the table, would capture a non-address and call it. Deciding that at
+            // run time meant resting on when the loader snaps imports, which is a
+            // guarantee not worth taking for one avoided ifdef.
             {
                 auto *previous = lyrium::hooks::patch_import(
                     ::GetModuleHandleA(nullptr),
@@ -1535,6 +1537,7 @@ extern "C"
                     original_direct3d_create9 = reinterpret_cast<Direct3DCreate9Fn>(previous);
                 }
             }
+#endif
 
             if (lyrium::dao::targets_verify_clean())
             {

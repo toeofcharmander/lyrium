@@ -51,7 +51,7 @@ install(TARGETS lyrium DESTINATION bin)
 # The difference is the .def and one extra translation unit. d3d9.cpp detects which
 # it is at run time by whether the import swap actually changed anything.
 function(lyrium_add_proxy name)
-  cmake_parse_arguments(ARG "" "" "SOURCES" ${ARGN})
+  cmake_parse_arguments(ARG "IMPORT_HOOK" "" "SOURCES" ${ARGN})
   add_library(${name} SHARED
     d3d9.cpp
     overlay.cpp
@@ -60,6 +60,12 @@ function(lyrium_add_proxy name)
     ${ARG_SOURCES}
   )
   target_link_libraries(${name} PRIVATE lyrium imguilib dwmapi psapi)
+
+  # Only the build that is not d3d9.dll patches the game's import table. The
+  # d3d9 build is that entry, so for it this is dead code rather than a no-op.
+  if (ARG_IMPORT_HOOK)
+    target_compile_definitions(${name} PRIVATE LYRIUM_IMPORT_HOOK)
+  endif()
   target_compile_options(${name} PRIVATE -Wno-microsoft-exception-spec)
 
   # The game loads these by name, so the filenames must stay exact --
@@ -74,7 +80,7 @@ function(lyrium_add_proxy name)
 endfunction()
 
 lyrium_add_proxy(d3d9 SOURCES d3d9.def)
-lyrium_add_proxy(dinput8 SOURCES dinput8.cpp dinput8.def)
+lyrium_add_proxy(dinput8 IMPORT_HOOK SOURCES dinput8.cpp dinput8.def)
 
 # Proves the enum values in tests/shim/d3d9_enum_list.inl match the genuine
 # <d3d9.h>. It is compiled here because this is the only configuration that has
